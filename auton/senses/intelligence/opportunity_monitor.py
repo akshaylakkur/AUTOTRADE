@@ -19,7 +19,7 @@ from typing import Any
 from auton.core.event_bus import EventBus
 from auton.core.events import OpportunityDiscovered
 from auton.senses.intelligence.scraper import ScrapedContent, WebScraper
-from auton.senses.intelligence.search_engine import SearchEngine, SearchResult
+from auton.senses.intelligence.search_provider import SearchProvider, SearchResult
 from auton.senses.intelligence.storage import ResearchStore, ResearchTask
 from auton.senses.intelligence.synthesizer import ResearchSynthesizer, SynthesisReport
 
@@ -86,14 +86,14 @@ class OpportunityMonitor:
     def __init__(
         self,
         event_bus: EventBus | None = None,
-        search_engine: SearchEngine | None = None,
+        search_provider: SearchProvider | None = None,
         scraper: WebScraper | None = None,
         synthesizer: ResearchSynthesizer | None = None,
         store: ResearchStore | None = None,
         config: MonitorConfig | None = None,
     ) -> None:
         self._event_bus = event_bus
-        self._search = search_engine or SearchEngine()
+        self._search = search_provider
         self._scraper = scraper or WebScraper()
         self._synth = synthesizer or ResearchSynthesizer()
         self._store = store or ResearchStore()
@@ -112,7 +112,8 @@ class OpportunityMonitor:
         if self._running:
             return
         self._running = True
-        await self._search.connect()
+        if self._search is not None:
+            await self._search.connect()
         await self._scraper.connect()
         self._task = asyncio.create_task(self._monitor_loop())
         logger.info("OpportunityMonitor started.")
@@ -127,7 +128,8 @@ class OpportunityMonitor:
             except asyncio.CancelledError:
                 pass
             self._task = None
-        await self._search.disconnect()
+        if self._search is not None:
+            await self._search.disconnect()
         await self._scraper.disconnect()
         logger.info("OpportunityMonitor stopped.")
 
@@ -181,7 +183,12 @@ class OpportunityMonitor:
         task_id = self._store.save_task(task)
 
         # 1. Search
-        results = await self._search.search(query, num_results=self._config.results_per_query)
+        if self._search is None:
+            logger.warning("No search provider configured; skipping research.")
+            report = SynthesisReport(query=query, briefs=[], overall_confidence=0.0, top_insights=[])
+            return report, []
+
+        results = await self._search.search(query, max_results=self._config.results_per_query)
         if not results:
             report = SynthesisReport(query=query, briefs=[], overall_confidence=0.0, top_insights=[])
             return report, []

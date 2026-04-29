@@ -14,6 +14,7 @@ from auton.core.config import Capability, TierGate
 from auton.core.constants import RISK_LIMITS, SEED_BALANCE
 from auton.core.event_bus import EventBus
 from auton.core.events import BalanceChanged, DecisionMade
+from auton.core.reasoning_log import get_reasoning_log
 from auton.ledger.master_wallet import MasterWallet
 
 logger = logging.getLogger(__name__)
@@ -156,8 +157,17 @@ class OpportunityEvaluator:
         resolved_tier = tier if tier is not None else TierGate.get_tier(balance)
         risk_limits = RISK_LIMITS.get(resolved_tier, RISK_LIMITS[0])
 
+        get_reasoning_log().think(
+            f"Evaluating opportunity {opportunity.id}: type={opportunity.opportunity_type}, "
+            f"return=${opportunity.expected_return:.2f}, risk={opportunity.risk_score:.2f}, "
+            f"capital=${opportunity.capital_required:.2f}, confidence={opportunity.confidence:.2f}."
+        )
+
         # Confidence gate
         if opportunity.confidence < self._min_confidence:
+            get_reasoning_log().think(
+                f"Opportunity {opportunity.id} rejected: confidence {opportunity.confidence:.2f} is below threshold {self._min_confidence:.2f}."
+            )
             return OpportunityScore(
                 opportunity_id=opportunity.id,
                 total_score=0.0,
@@ -171,6 +181,9 @@ class OpportunityEvaluator:
 
         # Hard risk gate
         if opportunity.risk_score > self._max_risk_threshold:
+            get_reasoning_log().think(
+                f"Opportunity {opportunity.id} rejected: risk {opportunity.risk_score:.2f} exceeds threshold {self._max_risk_threshold:.2f}."
+            )
             return OpportunityScore(
                 opportunity_id=opportunity.id,
                 total_score=0.0,
@@ -185,6 +198,9 @@ class OpportunityEvaluator:
         # Tier capability check
         capability = self._capability_for_type(opportunity.opportunity_type)
         if capability and not TierGate.is_allowed(capability, balance):
+            get_reasoning_log().think(
+                f"Opportunity {opportunity.id} rejected: tier gate denied for capability {capability.name}."
+            )
             return OpportunityScore(
                 opportunity_id=opportunity.id,
                 total_score=0.0,
@@ -212,6 +228,10 @@ class OpportunityEvaluator:
         floor = max(0.1, 0.5 - (resolved_tier * 0.05))
         approved = total >= floor and opportunity.risk_score <= risk_limits.get("max_leverage", 10.0) / 10.0
 
+        get_reasoning_log().decide(
+            f"Opportunity {opportunity.id} scored {total:.4f} (return={return_score:.2f}, risk={risk_score:.2f}, "
+            f"capital={capital_score:.2f}, time={time_score:.2f}) — approved={approved}."
+        )
         return OpportunityScore(
             opportunity_id=opportunity.id,
             total_score=round(total, 4),
@@ -475,6 +495,7 @@ class MultiObjectiveOptimizer:
         max_risk = max(d.risk_score for d in decisions) or 1.0
         max_time = max(d.time_horizon for d in decisions) or 1.0
 
+        get_reasoning_log().think(f"Optimising {len(decisions)} decisions across profit, risk, and time objectives.")
         scored: list[tuple[ResourceDecision, float]] = []
         for d in decisions:
             profit_score = d.expected_roi / max_roi
@@ -582,6 +603,7 @@ class ResourceAllocator:
             max_position_pct = limits["max_position_pct"]
 
         max_single = deployable * max_position_pct
+        get_reasoning_log().plan(f"Allocating up to ${deployable:.2f} across {len(decisions)} decisions.")
         allocations: list[ResourceAllocation] = []
 
         for decision, score in decisions:

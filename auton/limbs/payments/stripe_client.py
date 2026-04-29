@@ -60,6 +60,11 @@ class StripePaymentsLimb(BaseLimb):
         Stripe API base URL.
     """
 
+    @classmethod
+    def is_configured(cls) -> bool:
+        """Return True when a Stripe secret key is present in the environment."""
+        return bool(os.environ.get("STRIPE_SECRET_KEY", "").strip())
+
     def __init__(
         self,
         *,

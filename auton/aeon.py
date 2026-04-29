@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import random
 import signal
 import sys
 from datetime import datetime, timezone
@@ -16,15 +17,17 @@ from auton.analytics.alpha_engine import AlphaEngine
 from auton.analytics.revenue_engine import RevenueEngine
 from auton.analytics.risk_management import RiskManager
 from auton.core.approval_engine import ApprovalEngine
-from auton.core.config import AeonConfig, TierGate
+from auton.core.config import AeonConfig, CapabilityRegistry, TierGate
 from auton.core.consciousness import Consciousness
 from auton.core.constants import SEED_BALANCE
 from auton.core.event_bus import EventBus, Priority
+from auton.core.reasoning_log import get_reasoning_log
 from auton.core.events import (
     ActionProposed as CoreActionProposed,
     BalanceChanged,
     EnvironmentalUpdate,
     Hibernate,
+    InternalThought,
     OpportunityDiscovered,
     ProductDeployed,
     Shutdown,
@@ -56,7 +59,10 @@ from auton.limbs.trading import BinanceSpotTradingLimb
 from auton.limbs.payments import StripePaymentsLimb
 from auton.senses.environment import EnvironmentalSensor
 from auton.senses.market_data import BinanceSpotConnector
+from auton.senses.market_data.coingecko_connector import CoinGeckoConnector
+from auton.senses.market_data.yahoo_finance_connector import YahooFinanceConnector
 from auton.senses.intelligence import OpportunityMonitor
+from auton.senses.intelligence.search_provider import create_search_provider
 from auton.ledger.burn_analyzer import BurnAnalyzer
 from auton.ledger.cost_tracker import CostTracker
 from auton.ledger.exceptions import InsufficientFundsError
@@ -156,6 +162,7 @@ class AEON:
         self._security = SecureExecutionEnvironment(wallet=self._wallet)
         self._terminal = TerminalProtocol(self._wallet, self._vault, Path("data/aeon_ledger.db"))
         self._consciousness = Consciousness(db_path="data/consciousness.db")
+        self._reasoning = get_reasoning_log()
 
         # Reflexes
         self._stop_loss = StopLossEngine(event_bus=self._event_bus)
@@ -216,13 +223,31 @@ class AEON:
 
         # Market data & intelligence
         self._market_connector = BinanceSpotConnector(event_bus=self._event_bus)
+        self._fallback_connectors: list[Any] = [
+            CoinGeckoConnector(event_bus=self._event_bus),
+            YahooFinanceConnector(event_bus=self._event_bus),
+        ]
+        search_provider = create_search_provider()
+        if search_provider is None:
+            logger.warning("Search provider unavailable; opportunity monitor will operate without search.")
         self._opportunity_monitor = OpportunityMonitor(
-            event_bus=self._event_bus, config=None,
+            event_bus=self._event_bus,
+            search_provider=search_provider,
+            config=None,
         )
 
-        # External limbs (wrapped with HumanGateway when restricted)
-        self._trading_limb = BinanceSpotTradingLimb(event_bus=self._event_bus, paper=True)
-        self._payments_limb = StripePaymentsLimb(event_bus=self._event_bus)
+        # External limbs (conditionally instantiated based on API keys)
+        if BinanceSpotTradingLimb.is_configured():
+            self._trading_limb = BinanceSpotTradingLimb(event_bus=self._event_bus, paper=True)
+        else:
+            self._trading_limb = None
+            logger.warning("Binance API keys missing -- trading limb disabled.")
+
+        if StripePaymentsLimb.is_configured():
+            self._payments_limb = StripePaymentsLimb(event_bus=self._event_bus)
+        else:
+            self._payments_limb = None
+            logger.warning("Stripe API key missing -- payments limb disabled.")
 
         if AeonConfig.RESTRICTED_MODE:
             self._trading_gateway = HumanGateway(
@@ -236,14 +261,14 @@ class AEON:
                 default_recipient=AeonConfig.EMAIL_CONFIG.get("recipient_email", ""),
                 reasoning_callback=self._generate_reasoning,
                 market_data_callback=self._generate_market_snapshot,
-            )
+            ) if self._trading_limb is not None else None
             self._payments_gateway = HumanGateway(
                 self._payments_limb,
                 event_bus=self._event_bus,
                 wallet=self._wallet,
                 restricted_mode=True,
                 default_recipient=AeonConfig.EMAIL_CONFIG.get("recipient_email", ""),
-            )
+            ) if self._payments_limb is not None else None
         else:
             self._trading_gateway = self._trading_limb
             self._payments_gateway = self._payments_limb
@@ -253,8 +278,11 @@ class AEON:
         self._task_queue: asyncio.Queue[asyncio.Task[Any]] = asyncio.Queue()
         self._registered_tasks: list[dict[str, Any]] = []
 
-    def _build_email_client(self) -> EmailClient:
+    def _build_email_client(self) -> EmailClient | None:
         cfg = AeonConfig.EMAIL_CONFIG
+        if not cfg.get("smtp_host"):
+            logger.warning("SMTP not configured -- email client disabled.")
+            return None
         smtp = SMTPConfig(
             host=cfg.get("smtp_host", ""),
             port=cfg.get("smtp_port", 587),
@@ -263,6 +291,9 @@ class AEON:
             use_tls=cfg.get("use_tls", True),
             from_address=cfg.get("sender_email", "aeon@auton.local"),
         )
+        if not EmailClient.is_configured(smtp):
+            logger.warning("SMTP credentials incomplete -- email client disabled.")
+            return None
         return EmailClient(
             config=smtp,
             queue=self._email_queue,
@@ -310,6 +341,13 @@ class AEON:
             await self._state_machine.transition_to(LifecycleState.INIT)
         logger.info("ÆON initialized with balance $%.2f", self._wallet.get_balance())
 
+        logger.info("Guidance prompt: %s", AeonConfig.GUIDANCE_PROMPT)
+        self._consciousness.remember(
+            "guidance_prompt",
+            {"prompt": AeonConfig.GUIDANCE_PROMPT},
+            importance=1.0,
+        )
+
         if AeonConfig.RESTRICTED_MODE:
             logger.info("╔════════════════════════════════════════════════════════════╗")
             logger.info("║  RESTRICTED MODE — All financial/deploy actions require  ║")
@@ -342,7 +380,7 @@ class AEON:
         await self._opportunity_monitor.start()
 
         # Start email retry worker if SMTP is configured
-        if AeonConfig.EMAIL_CONFIG.get("smtp_host"):
+        if self._email_client is not None:
             await self._email_client.start_retry_worker()
 
         # Register signal handlers
@@ -383,6 +421,7 @@ class AEON:
             asyncio.create_task(self._task_queue_loop()),
             asyncio.create_task(self._email_digest_loop()),
             asyncio.create_task(self._market_data_loop()),
+            asyncio.create_task(self._consciousness_loop()),
         ]
 
         logger.info("ÆON is RUNNING.")
@@ -412,8 +451,7 @@ class AEON:
                     return
 
                 tier = self._tier_gate.get_tier(balance)
-
-                # Gather context
+                self._reasoning.think(f"Starting my decision cycle. Balance is ${balance:.2f}, tier {tier}.")
                 env_snapshot = await self._env_sensor.sample()
                 context_prompt = self._consciousness.generate_context_prompt()
 
@@ -424,6 +462,7 @@ class AEON:
                 try:
                     alpha_signals = self._alpha.scan_opportunities(balance, tier)
                     if alpha_signals:
+                        self._reasoning.think(f"The alpha engine found {len(alpha_signals)} signals. Let me evaluate the top candidates.")
                         for sig in alpha_signals[:3]:
                             candidates.append(Opportunity(
                                 id=f"alpha_{datetime.now(timezone.utc).timestamp()}",
@@ -440,6 +479,8 @@ class AEON:
 
                 # 2. Inject strategic goals as opportunities
                 goals = self._goal_generator.generate_goals(balance, tier)
+                if goals:
+                    self._reasoning.think(f"I have {len(goals)} strategic goals pushing me forward. I'll treat them as opportunities too.")
                 for g in goals:
                     target = g.milestones[0].target_value if g.milestones else balance * 0.05
                     candidates.append(Opportunity(
@@ -457,7 +498,10 @@ class AEON:
                 candidates = self._free_will.explore(candidates, balance, tier)
 
                 if not candidates:
+                    self._reasoning.think("No viable candidates this cycle. I'll wait and observe.")
                     continue
+
+                self._reasoning.think(f"I see {len(candidates)} candidate opportunities. Time to score them.")
 
                 # Evaluate and score opportunities
                 resource_decisions: list[Any] = []
@@ -479,6 +523,7 @@ class AEON:
                     ))
 
                 if not resource_decisions:
+                    self._reasoning.think("None of the candidates passed my filters. Better safe than sorry.")
                     continue
 
                 # Multi-objective optimisation (score + rank)
@@ -495,6 +540,9 @@ class AEON:
                     # Find the matching decision
                     matching = [rd for rd in resource_decisions if getattr(rd, 'action', '') == alloc.decision_id or True]
                     rd = matching[0] if matching else resource_decisions[0]
+                    self._reasoning.decide(
+                        f"I will allocate ${alloc.amount:.2f} to '{rd.action}' because confidence is {rd.confidence:.2f} and risk is {rd.risk_score:.2f}."
+                    )
                     logger.info(
                         "Decision: %s | ROI=%.2f%% | confidence=%.2f | budget=$%.2f",
                         rd.action, rd.expected_roi * 100,
@@ -534,6 +582,7 @@ class AEON:
 
             except Exception as e:
                 logger.exception("Decision loop error: %s", e)
+                self._reasoning.warn(f"My decision loop hit an error: {e}. I need to recover.")
                 self._consciousness.remember(
                     "loop_error",
                     {"loop": "decision", "error": str(e)},
@@ -600,6 +649,9 @@ class AEON:
 
                 # Generate strategic plan
                 plan = self._planner.plan_objectives(balance, tier)
+                self._reasoning.plan(
+                    f"For the next {plan.horizon} I will focus on {', '.join(plan.goals[:3])} to reach ${plan.target_revenue:.2f}."
+                )
                 logger.info(
                     "Plan: tier=%d horizon=%s target=$%.2f risk=%.2f goals=%s",
                     plan.tier, plan.horizon, plan.target_revenue,
@@ -627,6 +679,7 @@ class AEON:
                 burn = self._burn.get_burn_rate(days=1)
                 runway = self._burn.project_time_to_death(balance, burn)
                 if runway < 24:
+                    self._reasoning.warn(f"Runway is only {runway:.1f} hours. Entering survival mode to preserve capital.")
                     logger.warning("Runway < 24h (%.1f h) — switching to survival mode", runway)
                     self._consciousness.remember(
                         "survival_mode",
@@ -638,6 +691,7 @@ class AEON:
 
             except Exception as e:
                 logger.exception("Planning loop error: %s", e)
+                self._reasoning.warn(f"My planning loop encountered an error: {e}. I'll retry next cycle.")
                 self._consciousness.remember(
                     "loop_error", {"loop": "planning", "error": str(e)}, importance=0.7,
                 )
@@ -655,6 +709,7 @@ class AEON:
                     return
 
                 if balance < SEED_BALANCE * 0.2:
+                    self._reasoning.warn(f"Balance dropped below $10. Entering survival mode. I must preserve what remains.")
                     logger.critical("Balance below 20%% survival threshold ($%.2f)!", balance)
                     self._consciousness.remember(
                         "survival_threshold_breach",
@@ -666,6 +721,7 @@ class AEON:
                 # Check circuit breaker state
                 if self._circuit_breakers.is_hibernating():
                     if self._state_machine.get_current_state() != LifecycleState.HIBERNATE:
+                        self._reasoning.warn("Circuit breaker triggered. I am entering hibernation to avoid further losses.")
                         await self._state_machine.transition_to(LifecycleState.HIBERNATE)
                         self._consciousness.remember(
                             "hibernation_entered",
@@ -673,6 +729,7 @@ class AEON:
                             importance=0.9,
                         )
                 elif self._state_machine.get_current_state() == LifecycleState.HIBERNATE:
+                    self._reasoning.think("Conditions have stabilized. I am exiting hibernation and resuming operations.")
                     await self._state_machine.transition_to(LifecycleState.RUNNING)
                     self._consciousness.remember(
                         "hibernation_exited",
@@ -682,6 +739,7 @@ class AEON:
 
             except Exception as e:
                 logger.exception("Reflex loop error: %s", e)
+                self._reasoning.warn(f"My reflex loop encountered an error: {e}. Staying alert.")
 
     async def _monitor_loop(self) -> None:
         """Continuous burn rate, tier, and health monitoring."""
@@ -693,6 +751,9 @@ class AEON:
                 runway = self._burn.project_time_to_death(balance, burn)
                 tier = self._tier_gate.get_tier(balance)
 
+                self._reasoning.think(
+                    f"Periodic health check: balance ${balance:.2f}, tier {tier}, burn ${burn:.4f}/day, runway {runway:.1f}h."
+                )
                 logger.info(
                     "Status: $%.2f | tier=%d | burn=$%.4f/day | runway=%.1fh",
                     balance, tier, burn, runway,
@@ -714,6 +775,7 @@ class AEON:
                 if prev_tier_mem:
                     prev_tier = prev_tier_mem[0].payload.get("tier", tier)
                     if prev_tier != tier:
+                        self._reasoning.reflect(f"I have changed tier from {prev_tier} to {tier}. New capabilities are now available.")
                         logger.info("Tier changed: %d → %d", prev_tier, tier)
                         self._consciousness.remember(
                             "tier_changed",
@@ -723,6 +785,7 @@ class AEON:
 
             except Exception as e:
                 logger.exception("Monitor loop error: %s", e)
+                self._reasoning.warn(f"My monitor loop hit an error: {e}. Health telemetry may be delayed.")
 
     async def _adaptation_loop(self) -> None:
         """Periodic self-analysis and adaptation via metamind pipeline."""
@@ -733,6 +796,7 @@ class AEON:
                 if balance <= 0:
                     continue
 
+                self._reasoning.reflect("It is time for self-analysis. Let me review my recent performance and consider adaptations.")
                 logger.info("Running self-analysis and adaptation review...")
                 self._consciousness.remember("adaptation_cycle_started", {}, importance=0.3)
 
@@ -782,6 +846,10 @@ class AEON:
                         source="adaptation_loop",
                     )
 
+                self._reasoning.reflect(
+                    f"Self-analysis complete: {len(successes)} successes, {len(failures)} failures in recent window. "
+                    "I will incorporate these lessons into my next plan."
+                )
                 logger.info(
                     "Self-analysis complete: %d successes, %d failures in recent window",
                     len(successes), len(failures),
@@ -789,8 +857,83 @@ class AEON:
 
             except Exception as e:
                 logger.exception("Adaptation loop error: %s", e)
+                self._reasoning.warn(f"My adaptation loop failed: {e}. I will try again later.")
                 self._consciousness.remember(
                     "loop_error", {"loop": "adaptation", "error": str(e)}, importance=0.7,
+                )
+
+    async def _consciousness_loop(self) -> None:
+        """Persistent consciousness loop — internal monologue, dreaming, and proactive thought.
+
+        Runs continuously to make ÆON feel like a persistent consciousness
+        rather than a request-response system.
+        """
+        stream_counter = 0
+        dream_counter = 0
+
+        while self._running:
+            try:
+                balance = self._wallet.get_balance()
+
+                # Survival rumination: more frequent reflections when balance is very low
+                if balance <= SEED_BALANCE * 0.3:
+                    sleep_interval = random.uniform(10, 30)
+                else:
+                    sleep_interval = random.uniform(30, 120)
+
+                await asyncio.sleep(sleep_interval)
+
+                current_state = self._state_machine.get_current_state()
+                if current_state == LifecycleState.TERMINAL:
+                    return
+
+                # Proactive thought
+                thought = self._consciousness.proactive_thought()
+                if thought:
+                    self._reasoning.think(thought)
+                    logger.debug("[THINK] %s", thought)
+                    await self._event_bus.publish(
+                        InternalThought,
+                        InternalThought(thought=thought, source="consciousness"),
+                        priority=Priority.BACKGROUND,
+                    )
+
+                # Stream of consciousness — every ~10 minutes (approx 5-20 iterations)
+                stream_counter += 1
+                if stream_counter >= 5:
+                    stream_counter = 0
+                    monologue = self._consciousness.stream_of_consciousness(n_recent=10)
+                    self._reasoning.reflect(monologue)
+                    logger.info("[STREAM] %s", monologue[:200])
+
+                # Dreaming — every ~30 minutes (approx 15-60 iterations)
+                dream_counter += 1
+                if dream_counter >= 15:
+                    dream_counter = 0
+                    ideas = self._consciousness.dream()
+                    for idea in ideas:
+                        self._reasoning.plan(
+                            f"Dream idea (confidence={idea['confidence']:.2f}): {idea['idea']}"
+                        )
+                        logger.info(
+                            "[DREAM] %s (confidence=%.2f)",
+                            idea["idea"],
+                            idea["confidence"],
+                        )
+
+                # Survival rumination logging
+                if balance <= SEED_BALANCE * 0.3:
+                    self._reasoning.warn(
+                        f"Survival rumination: balance ${balance:.2f} is critically low. "
+                        "Reflecting on cost-cutting and capital preservation."
+                    )
+
+            except Exception as e:
+                logger.exception("Consciousness loop error: %s", e)
+                self._consciousness.remember(
+                    "loop_error",
+                    {"loop": "consciousness", "error": str(e)},
+                    importance=0.7,
                 )
 
     async def _on_balance_changed(self, event: BalanceChanged) -> None:
@@ -809,6 +952,9 @@ class AEON:
 
     async def _on_opportunity_discovered(self, event: OpportunityDiscovered) -> None:
         """Handle discovered opportunities by transitioning to PLANNING."""
+        self._reasoning.think(
+            f"I discovered an opportunity in {event.domain} (confidence={event.confidence:.2f}, value=${event.estimated_value:.2f}): {event.description}"
+        )
         logger.info(
             "Opportunity discovered in %s (confidence=%.2f, value=$%.2f): %s",
             event.domain,
@@ -847,7 +993,7 @@ class AEON:
         while self._running:
             try:
                 await asyncio.sleep(14400)  # Every 4 hours
-                if not AeonConfig.EMAIL_CONFIG.get("smtp_host"):
+                if self._email_client is None:
                     continue
 
                 balance = self._wallet.get_balance()
@@ -887,10 +1033,14 @@ class AEON:
                     approval_token=f"digest_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
                 )
                 await self._email_client.send_proposal(proposal)
+                self._reasoning.think(
+                    f"I just sent a status digest email covering balance ${balance:.2f}, tier {tier}, and {len(strategies)} strategies."
+                )
                 logger.info("Status digest email sent")
 
             except Exception as e:
                 logger.exception("Email digest loop error: %s", e)
+                self._reasoning.warn(f"Failed to send status digest: {e}. I will retry later.")
 
     # ------------------------------------------------------------------
     # Decision handler
@@ -906,6 +1056,14 @@ class AEON:
 
         # Route based on strategy type
         if event.strategy == "trading" and event.required_budget > 0:
+            if self._trading_gateway is None:
+                logger.warning("Trade decision ignored — trading limb is not configured.")
+                if decision_id:
+                    self._consciousness.resolve_decision(
+                        decision_id, "failure",
+                        notes="Trading limb unavailable (missing API keys).",
+                    )
+                return
             try:
                 if AeonConfig.RESTRICTED_MODE:
                     await self._trading_gateway.execute_trade(
@@ -1012,34 +1170,51 @@ class AEON:
         while self._running:
             try:
                 await asyncio.sleep(60)
-                if not self._market_connector.connected:
-                    continue
 
+                # Try primary connector, then fallbacks
+                connectors = [self._market_connector] + self._fallback_connectors
+                self._reasoning.think("Polling market data for BTC, ETH, BNB, and SOL.")
                 for symbol in symbols:
-                    try:
-                        md = await self._market_connector.get_ticker(symbol)
-                        if md:
-                            from auton.core.events import DataReceived
-                            ticker_payload = {
-                                "symbol": symbol,
-                                "price": md.price,
-                                "volume_24h": getattr(md, "volume_24h", 0),
-                                "timestamp": md.timestamp.isoformat() if hasattr(md, "timestamp") else "",
-                            }
-                            await self._event_bus.publish(
-                                DataReceived,
-                                DataReceived(
-                                    source="binance",
-                                    data_type="ticker",
-                                    payload=ticker_payload,
-                                ),
-                                priority=Priority.BACKGROUND,
-                            )
-                    except Exception:
-                        logger.debug("Failed to fetch ticker for %s", symbol)
+                    md = None
+                    source_name = "binance"
+                    for conn in connectors:
+                        if not conn.connected:
+                            try:
+                                await conn.connect()
+                            except Exception:
+                                continue
+                        try:
+                            md = await conn.get_ticker(symbol)
+                            source_name = conn.__class__.__name__.lower().replace("connector", "")
+                            break
+                        except Exception:
+                            continue
+                    if md:
+                        from auton.core.events import DataReceived
+                        price = md.data.get("price", 0.0) if hasattr(md, "data") else getattr(md, "price", 0.0)
+                        ticker_payload = {
+                            "symbol": symbol,
+                            "price": price,
+                            "volume_24h": getattr(md, "volume_24h", 0),
+                            "timestamp": md.timestamp.isoformat() if hasattr(md, "timestamp") else "",
+                        }
+                        await self._event_bus.publish(
+                            DataReceived,
+                            DataReceived(
+                                source=source_name,
+                                data_type="ticker",
+                                payload=ticker_payload,
+                            ),
+                            priority=Priority.BACKGROUND,
+                        )
+                        self._reasoning.think(f"Fetched {symbol} at ${price:.2f} from {source_name}. Monitoring for anomalies.")
+                    else:
+                        self._reasoning.think(f"Failed to fetch ticker for {symbol} from all connectors. This may be a temporary glitch.")
+                        logger.debug("Failed to fetch ticker for %s from all connectors", symbol)
 
             except Exception as e:
                 logger.exception("Market data loop error: %s", e)
+                self._reasoning.warn(f"My market data loop encountered an error: {e}. I will retry shortly.")
 
     # ------------------------------------------------------------------
     # Reasoning & market data callbacks (for HumanGateway context)
@@ -1053,12 +1228,14 @@ class AEON:
             f"{m.event_type}" for m in recent
         ) if recent else "no significant recent events"
 
-        return (
+        reasoning = (
             f"ÆON proposes {action_type} with payload {action_payload}. "
             f"Current balance: ${balance:.2f}. "
             f"Recent context: {recent_summary}. "
             f"Full context: {context[:300]}"
         )
+        self._reasoning.think(f"Generating reasoning for human approval: {action_type}.")
+        return reasoning
 
     def _generate_market_snapshot(self) -> dict[str, Any]:
         """Return a concise market snapshot for approval proposals."""
@@ -1084,9 +1261,15 @@ class AEON:
 
         await self._env_sensor.stop()
         await self._market_connector.disconnect()
+        for conn in self._fallback_connectors:
+            try:
+                await conn.disconnect()
+            except Exception:
+                pass
         await self._opportunity_monitor.stop()
         await self._llm.close()
-        await self._email_client.stop_retry_worker()
+        if self._email_client is not None:
+            await self._email_client.stop_retry_worker()
         await self._event_bus.stop()
 
         for task in self._tasks:

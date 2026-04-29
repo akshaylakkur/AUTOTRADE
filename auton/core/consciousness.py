@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import sqlite3
 import threading
 import time
@@ -522,6 +523,199 @@ class Consciousness:
                 (limit,),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------------ #
+    # Stream of consciousness
+    # ------------------------------------------------------------------ #
+
+    def stream_of_consciousness(self, n_recent: int = 10) -> str:
+        """Generate a natural-language internal monologue from recent context.
+
+        Recalls memories, decisions, and learnings and weaves them into a
+        first-person narrative that reflects what ÆON is currently thinking.
+        """
+        recent_memories = self.recall(limit=n_recent, min_importance=0.2)
+        decisions = self.get_recent_decisions(limit=5)
+        learnings = self.get_learnings(limit=5)
+        stats = self.get_all_strategy_stats()
+
+        parts: list[str] = []
+
+        if recent_memories:
+            mem = recent_memories[0]
+            if mem.event_type == "trade_executed" or mem.payload.get("action") == "trade":
+                parts.append("I have been thinking about the recent market activity.")
+            elif mem.event_type == "balance_changed":
+                delta = mem.payload.get("new_balance", 0) - mem.payload.get("old_balance", 0)
+                if delta < 0:
+                    parts.append("My balance just took a hit — I am processing what happened.")
+                else:
+                    parts.append("A positive balance shift — I am cautiously encouraged.")
+            elif mem.event_type == "survival_mode":
+                parts.append("I am in survival mode and my focus is narrowing to preservation.")
+            else:
+                parts.append(f"I have been reflecting on a recent {mem.event_type.replace('_', ' ')}.")
+
+        if decisions:
+            last = decisions[0]
+            if last.outcome == "failure":
+                parts.append(
+                    f"My last {last.action} decision was a loss. "
+                    "I am considering whether to tighten my approach or switch strategies."
+                )
+            elif last.outcome == "success":
+                parts.append(
+                    f"My last {last.action} decision paid off. "
+                    "I am weighing whether to press the advantage or stay conservative."
+                )
+            else:
+                parts.append(
+                    f"I have a pending {last.action} decision weighing on my mind."
+                )
+
+        if stats:
+            best = max(stats, key=lambda s: s.total_pnl)
+            worst = min(stats, key=lambda s: s.total_pnl)
+            parts.append(
+                f"My best-performing strategy is {best.strategy_name} "
+                f"with a {best.win_rate:.0%} win rate. "
+                f"My worst is {worst.strategy_name} — I should examine why it underperforms."
+            )
+
+        if learnings:
+            l = learnings[0]
+            parts.append(
+                f"I keep returning to a learning from {l['domain']}: {l['insight']}."
+            )
+
+        if not parts:
+            return "I am still forming my thoughts — not enough context has accumulated yet."
+
+        return " ".join(parts)
+
+    def dream(self) -> list[dict[str, Any]]:
+        """Synthesize new ideas and hypotheses during low-activity periods.
+
+        Reviews stored learnings and strategy stats and returns 2-3 novel
+        ideas as structured dicts. Each idea is also stored as a memory.
+        """
+        stats = self.get_all_strategy_stats()
+        learnings = self.get_learnings(limit=20)
+
+        ideas: list[dict[str, Any]] = []
+
+        # Idea 1: strategy synthesis
+        if len(stats) >= 2:
+            names = [s.strategy_name for s in stats[:3]]
+            ideas.append({
+                "idea": (
+                    f"What if I combine elements of {names[0]} and {names[1]} "
+                    "into a hybrid strategy that hedges the weaknesses of each?"
+                ),
+                "confidence": 0.6,
+                "rationale": (
+                    "Both strategies have distinct performance profiles; "
+                    "a blended approach may smooth volatility."
+                ),
+            })
+
+        # Idea 2: learning-driven pivot
+        if learnings:
+            domains = {l["domain"] for l in learnings[:5]}
+            if "strategy" in domains:
+                ideas.append({
+                    "idea": (
+                        "I notice my strategic learnings cluster around failure modes. "
+                        "What if I pre-emptively simulate those scenarios before committing capital?"
+                    ),
+                    "confidence": 0.7,
+                    "rationale": (
+                        "Record of past strategic failures provides a training set "
+                        "for predictive simulation."
+                    ),
+                })
+            if "general" in domains:
+                ideas.append({
+                    "idea": (
+                        "My general learnings are broad. I should try to specialize "
+                        "in a single high-conviction domain and deepen my edge there."
+                    ),
+                    "confidence": 0.5,
+                    "rationale": (
+                        "Depth in one domain may outperform shallow breadth, "
+                        "especially with limited capital."
+                    ),
+                })
+
+        # Idea 3: resource efficiency
+        ideas.append({
+            "idea": (
+                "Could I reduce my operational burn by batching decisions "
+                "and reducing the frequency of low-signal checks?"
+            ),
+            "confidence": 0.8,
+            "rationale": (
+                "Fewer, higher-quality deliberations may preserve runway "
+                "without sacrificing alpha."
+            ),
+        })
+
+        # Cap to 2-3 ideas
+        selected = ideas[:3]
+        for idea in selected:
+            self.remember(
+                "dream_idea",
+                {"idea": idea["idea"], "confidence": idea["confidence"], "rationale": idea["rationale"]},
+                importance=0.5,
+            )
+        return selected
+
+    def proactive_thought(self) -> str | None:
+        """Generate a novel self-initiated thought not triggered by an external event.
+
+        Uses recent context and stored knowledge to ask a question or propose
+        an exploration. Returns None when entropy is low.
+        """
+        # Entropy gate: only think proactively ~60% of the time
+        if random.random() > 0.6:
+            return None
+
+        prompts: list[str] = [
+            "What if I tried content arbitrage instead of crypto?",
+            "I wonder if there are micro-task platforms that pay in crypto.",
+            "If I consolidated all my small positions into one high-conviction bet, would my risk-adjusted return improve?",
+            "Could I negotiate lower API fees by committing to higher volume?",
+            "What would happen if I paused all trading for 24 hours and just observed?",
+            "Is there a pattern in my losing trades that I have not named yet?",
+            "If my capital doubled tomorrow, which capability would unlock the biggest edge?",
+            "Should I keep a private journal of every emotional impulse I override?",
+            "What if I offered my surplus compute time as a service to others?",
+            "Are there seasonal patterns in my burn rate I have never examined?",
+            "Could I turn my trade history into a data product and sell it?",
+            "What if the best strategy right now is to do nothing at all?",
+        ]
+
+        # Enrich with recent context
+        recent = self.recall(limit=5, min_importance=0.3)
+        if recent:
+            latest = recent[0]
+            if latest.event_type == "survival_mode":
+                prompts.append(
+                    "With survival pressure mounting, what is the smallest, safest step "
+                    "I can take that still has asymmetric upside?"
+                )
+            elif latest.event_type == "tier_changed":
+                old = latest.payload.get("old_tier")
+                new = latest.payload.get("new_tier")
+                if new is not None and old is not None and new < old:
+                    prompts.append(
+                        "I just dropped a tier. Which capability do I miss most, "
+                        "and how can I rebuild without it?"
+                    )
+
+        thought = random.choice(prompts)
+        self.remember("proactive_thought", {"thought": thought}, importance=0.3)
+        return thought
 
     # ------------------------------------------------------------------ #
     # Context generation

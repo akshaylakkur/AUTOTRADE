@@ -16,6 +16,7 @@ from auton.core.config import Capability, TierGate
 from auton.core.constants import RISK_LIMITS, SEED_BALANCE
 from auton.core.event_bus import EventBus
 from auton.core.events import StrategySwitched
+from auton.core.reasoning_log import get_reasoning_log
 from auton.cortex.decision_engine import Opportunity
 
 
@@ -132,6 +133,10 @@ class WealthTierManager:
 
         old_caps = set(self.capabilities_for_tier(old_tier))
         new_caps = set(self.capabilities_for_tier(new_tier))
+        if old_tier != new_tier:
+            get_reasoning_log().reflect(
+                f"Tier changed from {old_tier} to {new_tier}. Unlocked: {[c.name for c in new_caps - old_caps]}."
+            )
 
         record = {
             "old_tier": old_tier,
@@ -631,7 +636,9 @@ class TradingExpansion(ExpansionStrategy):
         data = market_data or {}
         momentum = data.get("momentum", 0.0)
         if momentum <= 0:
+            get_reasoning_log().think("No momentum detected in trading markets. Skipping trading expansion ideas.")
             return opportunities
+        get_reasoning_log().think(f"Trading expansion: momentum is {momentum:.2f}. Generating trading opportunities.")
 
         expected_return = balance * 0.02 * momentum
         risk_score = max(0.1, 0.5 - momentum * 0.2)
@@ -677,7 +684,9 @@ class SaaSExpansion(ExpansionStrategy):
     ) -> list[Opportunity]:
         opportunities: list[Opportunity] = []
         if tier < 1:
+            get_reasoning_log().think("SaaS expansion not available yet: requires tier 1 or higher.")
             return opportunities  # SAAS_HOSTING requires tier 1+
+        get_reasoning_log().think("SaaS expansion: I have enough tier to consider product launches.")
 
         expected_return = balance * 0.05  # recurring revenue heuristic
         risk_score = 0.3
@@ -723,12 +732,15 @@ class ArbitrageExpansion(ExpansionStrategy):
     ) -> list[Opportunity]:
         opportunities: list[Opportunity] = []
         if tier < 1:
+            get_reasoning_log().think("Arbitrage expansion locked until tier 1.")
             return opportunities  # MULTI_EXCHANGE_ARBITRAGE requires tier 1+
 
         data = market_data or {}
         spread = data.get("spread", 0.0)
         if spread <= 0:
+            get_reasoning_log().think("No arbitrage spread detected. Waiting for better conditions.")
             return opportunities
+        get_reasoning_log().think(f"Arbitrage expansion: detected spread of {spread:.4f}. Evaluating opportunity.")
 
         expected_return = balance * spread * 0.5
         risk_score = 0.25
@@ -839,6 +851,7 @@ class ExpansionController:
         tier: int,
         performance: dict[str, StrategyPerformance] | None = None,
     ) -> list[str]:
+        get_reasoning_log().think(f"Selecting expansion strategies for tier {tier} with balance ${balance:.2f}.")
         """Choose which strategies to activate based on performance.
 
         Returns:
@@ -859,6 +872,7 @@ class ExpansionController:
             # Performance gate: deactivate chronic losers
             if snapshot.trades_count >= self._performance_lookback and snapshot.win_rate < self._win_rate_threshold:
                 if strategy.is_active:
+                    get_reasoning_log().reflect(f"Strategy {name} is underperforming (win_rate={snapshot.win_rate:.2f}). Deactivating.")
                     strategy.deactivate()
                 continue
 

@@ -17,7 +17,8 @@ from auton.senses.intelligence.opportunity_monitor import (
     OpportunityMonitor,
 )
 from auton.senses.intelligence.scraper import ScrapedContent, WebScraper
-from auton.senses.intelligence.search_engine import SearchEngine, SearchResult
+from auton.senses.intelligence.search_engine import SearchEngine
+from auton.senses.intelligence.search_provider import SearchResult
 from auton.senses.intelligence.storage import ResearchStore, ResearchTask
 from auton.senses.intelligence.synthesizer import (
     ResearchSynthesizer,
@@ -63,8 +64,11 @@ def research_store(tmp_path: Any) -> ResearchStore:
 
 @pytest.fixture
 def opportunity_monitor(mock_event_bus: AsyncMock) -> OpportunityMonitor:
+    mock_search = AsyncMock()
+    mock_search.search = AsyncMock(return_value=[])
     return OpportunityMonitor(
         event_bus=mock_event_bus,
+        search_provider=mock_search,
         config=MonitorConfig(poll_interval_seconds=0.1),
     )
 
@@ -475,12 +479,12 @@ async def test_monitor_research_no_results(opportunity_monitor: OpportunityMonit
 async def test_full_pipeline(tmp_path: Any, mock_event_bus: AsyncMock) -> None:
     """End-to-end pipeline: search -> scrape -> synthesize -> store -> emit."""
     store = ResearchStore(db_path=str(tmp_path / "pipeline.db"))
-    search = SearchEngine(serpapi_key="test", brave_api_key="test")
+    search_provider = AsyncMock()
     scraper = WebScraper()
     synth = ResearchSynthesizer()
     monitor = OpportunityMonitor(
         event_bus=mock_event_bus,
-        search_engine=search,
+        search_provider=search_provider,
         scraper=scraper,
         synthesizer=synth,
         store=store,
@@ -500,7 +504,7 @@ async def test_full_pipeline(tmp_path: Any, mock_event_bus: AsyncMock) -> None:
     <body><p>This guide shows how to make money with SaaS arbitrage and generate profit revenue.</p></body>
     </html>
     """
-    search.search = AsyncMock(return_value=[search_result])  # type: ignore[method-assign]
+    search_provider.search = AsyncMock(return_value=[search_result])
     scraper._client = MagicMock()
     scraper._client.get = AsyncMock(return_value=_mock_response(200, text=html))
 

@@ -313,3 +313,12 @@ class EnvironmentalUpdate:
     economic_calendar: list[dict[str, Any]] = field(default_factory=list)
     system_load: dict[str, float] = field(default_factory=dict)
     network_health: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class InternalThought:
+    """Emitted when the consciousness system generates a self-initiated thought."""
+
+    thought: str
+    source: str = "consciousness"
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))

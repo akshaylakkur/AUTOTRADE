@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from contextlib import ExitStack
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -40,26 +41,34 @@ async def test_initialization_with_seed(aeon, tmp_path):
 async def test_start_transitions_to_running(aeon):
     """start() transitions from INIT to RUNNING."""
     await aeon.initialize()
-    with patch.object(aeon._state_machine, "transition_to") as mock_transition:
-        with patch.object(aeon._env_sensor, "start", new_callable=AsyncMock):
-            with patch.object(aeon._market_connector, "connect", new_callable=AsyncMock):
-                with patch.object(aeon._opportunity_monitor, "start", new_callable=AsyncMock):
-                    with patch.object(aeon._email_client, "start_retry_worker", new_callable=AsyncMock):
-                        with patch.object(aeon, "_decision_loop", new_callable=AsyncMock):
-                            with patch.object(aeon, "_planning_loop", new_callable=AsyncMock):
-                                with patch.object(aeon, "_reflex_loop", new_callable=AsyncMock):
-                                    with patch.object(aeon, "_monitor_loop", new_callable=AsyncMock):
-                                        with patch.object(aeon, "_adaptation_loop", new_callable=AsyncMock):
-                                            with patch.object(aeon, "_task_queue_loop", new_callable=AsyncMock):
-                                                with patch.object(aeon, "_email_digest_loop", new_callable=AsyncMock):
-                                                    with patch.object(aeon, "_market_data_loop", new_callable=AsyncMock):
-                                                        task = asyncio.create_task(aeon.start())
-                                                        await asyncio.sleep(0.05)
-                                                        aeon._running = False
-                                                        try:
-                                                            await task
-                                                        except asyncio.CancelledError:
-                                                            pass
+    patches = [
+        patch.object(aeon._state_machine, "transition_to"),
+        patch.object(aeon._env_sensor, "start", new_callable=AsyncMock),
+        patch.object(aeon._market_connector, "connect", new_callable=AsyncMock),
+        patch.object(aeon._opportunity_monitor, "start", new_callable=AsyncMock),
+        patch.object(aeon, "_decision_loop", new_callable=AsyncMock),
+        patch.object(aeon, "_planning_loop", new_callable=AsyncMock),
+        patch.object(aeon, "_reflex_loop", new_callable=AsyncMock),
+        patch.object(aeon, "_monitor_loop", new_callable=AsyncMock),
+        patch.object(aeon, "_adaptation_loop", new_callable=AsyncMock),
+        patch.object(aeon, "_task_queue_loop", new_callable=AsyncMock),
+        patch.object(aeon, "_email_digest_loop", new_callable=AsyncMock),
+        patch.object(aeon, "_market_data_loop", new_callable=AsyncMock),
+        patch.object(aeon, "_consciousness_loop", new_callable=AsyncMock),
+    ]
+    if aeon._email_client is not None:
+        patches.append(patch.object(aeon._email_client, "start_retry_worker", new_callable=AsyncMock))
+    with ExitStack() as stack:
+        for p in patches:
+            stack.enter_context(p)
+        mock_transition = aeon._state_machine.transition_to
+        task = asyncio.create_task(aeon.start())
+        await asyncio.sleep(0.05)
+        aeon._running = False
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
     # transition_to called for RUNNING
     assert any(call.args == (LifecycleState.RUNNING,) for call in mock_transition.call_args_list)
@@ -98,6 +107,22 @@ async def test_tier_progression(aeon):
     assert aeon._tier_gate.get_tier(49.99) == 0
     assert aeon._tier_gate.get_tier(50.0) == 0
     assert aeon._tier_gate.get_tier(99.99) == 0
+
+
+@pytest.mark.asyncio
+async def test_initialize_logs_guidance_prompt(aeon, monkeypatch, tmp_path, caplog):
+    """initialize() logs and remembers the guidance prompt."""
+    monkeypatch.setenv("AEON_GUIDANCE_PROMPT", "Crypto arbitrage: monitor exchange spreads.")
+    with caplog.at_level("INFO", logger="aeon"):
+        with patch.object(aeon._wallet, "get_balance", return_value=0.0):
+            with patch.object(aeon._wallet, "credit"):
+                with patch.object(aeon._state_machine, "transition_to"):
+                    with patch("auton.aeon.AeonConfig.GUIDANCE_PROMPT", "Crypto arbitrage: monitor exchange spreads."):
+                        await aeon.initialize()
+
+    assert "Guidance prompt: Crypto arbitrage" in caplog.text
+    memories = aeon._consciousness.recall(limit=10, event_type="guidance_prompt")
+    assert any(m.payload.get("prompt") == "Crypto arbitrage: monitor exchange spreads." for m in memories)
     assert aeon._tier_gate.get_tier(100.0) == 1
     assert aeon._tier_gate.get_tier(499.99) == 1
     assert aeon._tier_gate.get_tier(500.0) == 2

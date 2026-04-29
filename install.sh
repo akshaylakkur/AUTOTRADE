@@ -209,13 +209,9 @@ phase4_configure() {
     # --- LLM Provider selection (always shown in TTY mode) ---
     if [[ -t 0 ]]; then
         _choose_llm_provider
-        echo
-        echo -e "  ${DIM}Configure additional API keys? Press enter to skip, or 'y' to continue.${RESET}"
-        echo -ne "  ${YELLOW}→${RESET} "
-        read -r do_wizard
-        if [[ "$do_wizard" == "y" || "$do_wizard" == "Y" ]]; then
-            _run_wizard
-        fi
+        _validate_provider
+        _run_wizard
+        _ask_guidance_prompt
     fi
 
     # Source .env
@@ -230,8 +226,8 @@ os.environ['AEON_VAULT_KEY'] = '${AEON_VAULT_KEY}'
 from auton.core.consciousness import Consciousness
 c = Consciousness(db_path='data/consciousness.db')
 c.remember('installation', {'method': 'curl', 'timestamp': '$(date -u +%Y-%m-%dT%H:%M:%SZ)'}, importance=1.0)
-s = c.get_consciousness_summary()
-print(f'  Memories: {s[\"total_memories\"]}  |  DB: {s[\"db_size_bytes\"]} bytes')
+s = c.get_stats()
+print(f'  Memories: {s[\"total_memories\"]}  |  DB: {s[\"db_size_kb\"]} KB')
 " 2>&1 || yellow "  ⚠ DB may already exist — continuing"
     echo -e "  ${GREEN}✓${RESET} Consciousness ready"
 
@@ -340,6 +336,124 @@ _choose_llm_provider() {
     esac
 }
 
+_validate_provider() {
+    echo
+    echo -e "  ${BOLD}${MAGENTA}▸ Validate LLM connectivity${RESET}"
+    echo
+
+    local provider
+    provider="$(grep "^AEON_LLM_PROVIDER=" "$ENV_FILE" | cut -d= -f2- || true)"
+    [[ -z "$provider" ]] && provider="ollama"
+
+    local success=false
+    local retries=0
+    local max_retries=2
+
+    while [[ "$success" == "false" && "$retries" -lt "$max_retries" ]]; do
+        case "$provider" in
+            ollama)
+                local host model
+                host="$(grep "^OLLAMA_HOST=" "$ENV_FILE" | cut -d= -f2- || true)"
+                model="$(grep "^OLLAMA_MODEL=" "$ENV_FILE" | cut -d= -f2- || true)"
+                [[ -z "$host" ]] && host="http://localhost:11434"
+                [[ -z "$model" ]] && model="llama3.2"
+
+                echo -e "  ${YELLOW}○${RESET} Pinging Ollama at ${DIM}${host}${RESET} (model: ${DIM}${model}${RESET})..."
+
+                if "$VENV_PYTHON" -c "
+import asyncio, sys
+from auton.cortex.ollama_provider import OllamaProvider
+
+async def test():
+    p = OllamaProvider(host='${host}', model='${model}')
+    ok = await p.health_check()
+    if not ok:
+        print('HEALTH_CHECK_FAILED', flush=True)
+        return False
+    resp = await p.infer('Say hello in one word.')
+    print('OK', flush=True)
+    return True
+
+result = asyncio.run(test())
+sys.exit(0 if result else 1)
+" 2>/dev/null; then
+                    success=true
+                else
+                    retries=$((retries + 1))
+                    echo -e "  ${RED}✗${RESET} Ollama unreachable or model not found."
+                    if [[ "$retries" -lt "$max_retries" ]]; then
+                        echo -e "  ${YELLOW}→${RESET} Retrying in 2s... (${retries}/${max_retries})"
+                        sleep 2
+                    fi
+                fi
+                ;;
+            bedrock)
+                local ak sk region model_id
+                ak="$(grep "^BEDROCK_AWS_ACCESS_KEY_ID=" "$ENV_FILE" | cut -d= -f2- || true)"
+                sk="$(grep "^BEDROCK_AWS_SECRET_ACCESS_KEY=" "$ENV_FILE" | cut -d= -f2- || true)"
+                region="$(grep "^BEDROCK_AWS_REGION=" "$ENV_FILE" | cut -d= -f2- || true)"
+                model_id="$(grep "^BEDROCK_MODEL_ID=" "$ENV_FILE" | cut -d= -f2- || true)"
+                [[ -z "$region" ]] && region="us-east-1"
+                [[ -z "$model_id" ]] && model_id="anthropic.claude-3-sonnet-20240229-v1:0"
+
+                echo -e "  ${YELLOW}○${RESET} Testing Bedrock in ${DIM}${region}${RESET} (model: ${DIM}${model_id}${RESET})..."
+
+                if "$VENV_PYTHON" -c "
+import asyncio, sys
+from auton.cortex.bedrock_provider import BedrockProvider
+
+async def test():
+    p = BedrockProvider(
+        access_key_id='${ak}',
+        secret_access_key='${sk}',
+        region='${region}',
+        model_id='${model_id}'
+    )
+    resp = await p.infer('Say hello in one word.')
+    print('OK', flush=True)
+    return True
+
+result = asyncio.run(test())
+sys.exit(0 if result else 1)
+" 2>/dev/null; then
+                    success=true
+                else
+                    retries=$((retries + 1))
+                    echo -e "  ${RED}✗${RESET} Bedrock call failed."
+                    if [[ "$retries" -lt "$max_retries" ]]; then
+                        echo -e "  ${YELLOW}→${RESET} Retrying in 2s... (${retries}/${max_retries})"
+                        sleep 2
+                    fi
+                fi
+                ;;
+            anthropic|openai)
+                echo -e "  ${YELLOW}⚠${RESET} Provider '${provider}' is not fully implemented yet — skipping validation."
+                success=true
+                ;;
+            *)
+                echo -e "  ${YELLOW}⚠${RESET} Unknown provider '${provider}' — skipping validation."
+                success=true
+                ;;
+        esac
+    done
+
+    if [[ "$success" == "false" ]]; then
+        echo
+        echo -e "  ${RED}✗${RESET} LLM validation failed after ${max_retries} attempts."
+        echo -e "  ${CYAN}→${RESET} Switch to a different provider? [y/N] "
+        echo -ne "  ${YELLOW}→${RESET} "
+        read -r switch_provider
+        if [[ "$switch_provider" == "y" || "$switch_provider" == "Y" ]]; then
+            _choose_llm_provider
+            _validate_provider
+        else
+            echo -e "  ${YELLOW}⚠${RESET} Continuing without a working LLM. ÆON will degrade to rule-based mode."
+        fi
+    else
+        echo -e "  ${GREEN}✓${RESET} LLM is responsive."
+    fi
+}
+
 _run_wizard() {
     echo
     echo -e "  ${CYAN}┌──────────────────────────────────────────────────┐${RESET}"
@@ -376,6 +490,32 @@ _run_wizard() {
     _ask "OPENAI_API_KEY" "OpenAI API key" "https://platform.openai.com/api-keys"
     echo
     echo -e "  ${GREEN}✓${RESET} Configuration saved"
+}
+
+_ask_guidance_prompt() {
+    echo
+    echo -e "  ${CYAN}╔══════════════════════════════════════════════════╗${RESET}"
+    echo -e "  ${CYAN}║${RESET}         ${BOLD}Sector / Strategy Guidance${RESET}               ${CYAN}║${RESET}"
+    echo -e "  ${CYAN}╚══════════════════════════════════════════════════╝${RESET}"
+    echo
+    echo -e "  What sector or strategy should ÆON focus on?"
+    echo
+    echo -e "  ${DIM}Examples:${RESET}"
+    echo -e "    - \"Real estate: find undervalued properties and send investment briefings\""
+    echo -e "    - \"Technology stocks: analyze tech sector for long-term growth opportunities\""
+    echo -e "    - \"Short trading: find quick intraday opportunities and alert me frequently\""
+    echo -e "    - \"Crypto arbitrage: monitor exchange spreads and execute low-risk trades\""
+    echo -e "    - \"General profit: find any opportunity to grow the \$50 seed balance\""
+    echo
+    local default_prompt="General profit: find any opportunity to grow the seed balance."
+    echo -ne "  Guidance prompt [${DIM}${default_prompt}${RESET}]: "
+    read -r guidance_prompt
+    if [[ -z "$guidance_prompt" ]]; then
+        guidance_prompt="$default_prompt"
+    fi
+    _set_env "AEON_GUIDANCE_PROMPT" "$guidance_prompt"
+    echo
+    echo -e "  ${GREEN}✓${RESET} Guidance prompt saved"
 }
 
 # ---------------------------------------------------------------------------

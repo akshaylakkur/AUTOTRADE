@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from auton.core.reasoning_log import get_reasoning_log
 from auton.cortex.dataclasses import ReasoningReceipt
 
 
@@ -38,6 +39,10 @@ class MetaCognition:
             A :class:`ReasoningReceipt` with go/no-go and expected value.
         """
         expected_value = expected_profit * confidence - reasoning_cost
+        get_reasoning_log().reflect(
+            f"Evaluating reasoning cost: expected_profit=${expected_profit:.4f}, cost=${reasoning_cost:.4f}, "
+            f"confidence={confidence:.2f}, expected_value=${expected_value:.4f}."
+        )
         go = expected_value > 0 and confidence > 0.3
 
         mode = "deep" if reasoning_cost >= self._deep_cost else "frugal"
@@ -75,16 +80,21 @@ class MetaCognition:
             ``True`` if deep reasoning should be used.
         """
         if current_burn_rate <= 0:
-            # Avoid division by zero; if we're not burning anything, deep mode is fine.
+            get_reasoning_log().reflect("Burn rate is zero. Deep reasoning mode is acceptable if opportunity is large enough.")
             return opportunity_size >= self._deep_cost * self._deep_threshold_multiplier
 
         burn_ratio = current_burn_rate / max(income, 0.0001)
         if burn_ratio > 1.5:
-            # Burning much more than we earn: never deep mode.
+            get_reasoning_log().reflect(f"Burn ratio is {burn_ratio:.2f}, too high for deep mode. Staying frugal.")
             return False
 
         # Deep mode only for high-conviction, high-reward opportunities.
-        return opportunity_size >= self._deep_cost * self._deep_threshold_multiplier
+        use_deep = opportunity_size >= self._deep_cost * self._deep_threshold_multiplier
+        if use_deep:
+            get_reasoning_log().reflect(f"Opportunity size ${opportunity_size:.4f} justifies deep reasoning mode.")
+        else:
+            get_reasoning_log().reflect(f"Opportunity size ${opportunity_size:.4f} is too small for deep mode. Staying frugal.")
+        return use_deep
 
     def receipt_for_opportunity(
         self,

@@ -450,3 +450,24 @@ class TestTierGate:
         assert Capability.SPOT_TRADING in caps
         assert Capability.FUTURES_TRADING in caps
         assert Capability.EQUITIES not in caps
+
+
+# ---------------------------------------------------------------------------
+# AeonConfig tests
+# ---------------------------------------------------------------------------
+
+
+class TestAeonConfig:
+    def test_guidance_prompt_default(self) -> None:
+        from auton.core.config import AeonConfig
+
+        assert AeonConfig.GUIDANCE_PROMPT == "General profit: find any opportunity to grow the seed balance."
+
+    def test_guidance_prompt_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("AEON_GUIDANCE_PROMPT", "Crypto arbitrage: monitor exchange spreads and execute low-risk trades.")
+        # Force re-import by reading the attribute after env is set
+        import importlib
+        from auton.core import config
+
+        importlib.reload(config)
+        assert config.AeonConfig.GUIDANCE_PROMPT == "Crypto arbitrage: monitor exchange spreads and execute low-risk trades."

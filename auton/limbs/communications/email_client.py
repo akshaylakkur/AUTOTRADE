@@ -56,6 +56,23 @@ class EmailClient(BaseLimb):
     _MAX_RETRIES = 5
     _BASE_BACKOFF_SECONDS = 30
 
+    @staticmethod
+    def is_configured(config: SMTPConfig | None = None) -> bool:
+        """Return True when SMTP credentials are complete and non-empty.
+
+        Args:
+            config: Optional SMTPConfig to check. If None, checks environment
+                variables directly.
+        """
+        import os
+        if config is not None:
+            return bool(config.host.strip() and config.username.strip() and config.password.strip())
+        return bool(
+            os.environ.get("AEON_APPROVAL_EMAIL_SMTP_HOST", "").strip()
+            and os.environ.get("AEON_APPROVAL_EMAIL_SENDER", "").strip()
+            and os.environ.get("AEON_APPROVAL_EMAIL_PASSWORD", "").strip()
+        )
+
     def __init__(
         self,
         config: SMTPConfig,

@@ -35,6 +35,12 @@ class BinanceSpotTradingLimb(BaseLimb):
     _MAKER_FEE_RATE = 0.001
     _TAKER_FEE_RATE = 0.001
 
+    @classmethod
+    def is_configured(cls) -> bool:
+        """Return True when Binance API credentials are present in the environment."""
+        import os
+        return bool(os.environ.get("BINANCE_API_KEY", "").strip() and os.environ.get("BINANCE_SECRET_KEY", "").strip())
+
     def __init__(
         self,
         *,

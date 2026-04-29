@@ -8,9 +8,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from auton.core.config import TierGate
+from auton.core.config import AeonConfig, TierGate
 from auton.core.event_bus import EventBus
 from auton.core.events import GoalGenerated, OpportunityDiscovered
+from auton.core.reasoning_log import get_reasoning_log
 from auton.cortex.decision_engine import Opportunity, ResourceDecision
 from auton.cortex.expansionism import Goal, GoalPlanner, Milestone
 
@@ -65,8 +66,10 @@ class FreeWillEngine:
         rate = self.effective_rate(resolved_tier)
 
         if self._rng.random() > rate:
+            get_reasoning_log().think(f"Exploration roll failed (rate={rate:.2f}). Staying with existing opportunities.")
             return opportunities
 
+        get_reasoning_log().think(f"I feel adventurous. Injecting exploratory opportunities at rate {rate:.2f}.")
         # Generate 1-3 exploratory opportunities with unusual characteristics
         extras: list[Opportunity] = []
         count = self._rng.randint(1, 3)
@@ -211,8 +214,19 @@ class GoalGenerator:
         perf = recent_performance or {}
         goals: list[Goal] = []
 
+        # Inject user guidance into the first goal
+        goals.append(Goal(
+            name="user_guidance",
+            description=AeonConfig.GUIDANCE_PROMPT,
+            milestones=[
+                Milestone(name="guidance_alignment", target_value=1.0, current_value=0.0, unit="count"),
+            ],
+        ))
+
+        get_reasoning_log().think("Generating goals based on current balance and performance.")
         # Survival urgency
         if balance < 100.0:
+            get_reasoning_log().warn(f"Balance is only ${balance:.2f}. I need urgent survival goals.")
             goals.append(Goal(
                 name="urgent_survival",
                 description="Generate $50 in 48 hours through any available channel",
@@ -236,6 +250,7 @@ class GoalGenerator:
 
         # Serendipity goal: try something completely new
         if self._rng.random() < 0.2 + (resolved_tier * 0.05):
+            get_reasoning_log().think("A serendipity idea struck me. Adding an experimental goal.")
             goals.append(Goal(
                 name="serendipity_experiment",
                 description="Execute one high-risk, high-reward experiment and document results",

@@ -38,6 +38,19 @@ class SearchEngine:
     _SERPAPI_URL = "https://serpapi.com/search"
     _BRAVE_URL = "https://api.search.brave.com/res/v1/web/search"
 
+    @classmethod
+    def is_configured(cls, provider: str = "serpapi") -> bool:
+        """Return True when the given search provider has a configured API key.
+
+        Args:
+            provider: ``"serpapi"`` or ``"brave"``.
+        """
+        if provider == "serpapi":
+            return bool(os.getenv("SERPAPI_KEY", "").strip())
+        if provider == "brave":
+            return bool(os.getenv("BRAVE_API_KEY", "").strip())
+        return False
+
     def __init__(
         self,
         serpapi_key: str | None = None,

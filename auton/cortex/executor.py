@@ -7,6 +7,7 @@ from typing import Any
 from auton.core.config import Capability, TierGate
 from auton.core.event_bus import EventBus
 from auton.core.events import TradeSignal
+from auton.core.reasoning_log import get_reasoning_log
 from auton.cortex.dataclasses import Decision, DecisionType
 
 
@@ -62,6 +63,7 @@ class TacticalExecutor:
         expected_profit = opportunity.get("expected_profit", 0.0)
 
         if not self._tier_gate.is_allowed(Capability.SPOT_TRADING, balance):
+            get_reasoning_log().think(f"Trade evaluation for {symbol} denied: SPOT_TRADING not allowed at current tier.")
             return Decision(
                 decision_type=DecisionType.NO_OP,
                 symbol=symbol,
@@ -75,6 +77,7 @@ class TacticalExecutor:
 
         # Conservative filter: only act on high-confidence opportunities
         if confidence < 0.5:
+            get_reasoning_log().think(f"Trade {symbol} rejected: confidence {confidence:.2f} is below 0.5 threshold.")
             return Decision(
                 decision_type=DecisionType.NO_OP,
                 symbol=symbol,
@@ -86,6 +89,7 @@ class TacticalExecutor:
                 metadata={"reason": "insufficient_confidence", "threshold": 0.5},
             )
 
+        get_reasoning_log().decide(f"I will execute a {side} trade for {symbol} with confidence {confidence:.2f}.")
         return Decision(
             decision_type=DecisionType.TRADE,
             symbol=symbol,
@@ -135,10 +139,12 @@ class TacticalExecutor:
             A result dict describing what was emitted.
         """
         if decision.decision_type == DecisionType.NO_OP:
+            get_reasoning_log().think("Execution skipped: this is a NO_OP decision.")
             return {"executed": False, "reason": "no_op_decision"}
 
         if decision.decision_type == DecisionType.TRADE:
             if self._event_bus is None:
+                get_reasoning_log().warn("Cannot execute trade: no event bus available.")
                 return {"executed": False, "reason": "no_event_bus"}
             signal = TradeSignal(
                 symbol=decision.symbol or "UNKNOWN",
@@ -152,6 +158,7 @@ class TacticalExecutor:
                 },
             )
             await self._event_bus.publish(TradeSignal, signal)
+            get_reasoning_log().think(f"Trade signal published for {signal.symbol} {signal.side}.")
             return {"executed": True, "event": "TradeSignal", "symbol": signal.symbol}
 
         if decision.decision_type == DecisionType.PRODUCT_LAUNCH:

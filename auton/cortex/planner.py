@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from auton.core.config import Capability, TierGate
+from auton.core.config import AeonConfig, Capability, TierGate
 from auton.core.constants import RISK_LIMITS, TIER_COMPUTE_BUDGETS
+from auton.core.reasoning_log import get_reasoning_log
 from auton.cortex.dataclasses import Plan
 
 
@@ -53,7 +54,7 @@ class StrategicPlanner:
         capability_priorities = self._build_capability_priorities(resolved_tier)
 
         plan = Plan(
-            goals=goals,
+            goals=goals + [f"User guidance: {AeonConfig.GUIDANCE_PROMPT}"],
             target_revenue=target_revenue,
             risk_tolerance=risk_tolerance,
             capability_priorities=capability_priorities,

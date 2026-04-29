@@ -132,6 +132,18 @@ class TestStrategicPlanner:
         with pytest.raises(ValueError, match="daily' or 'weekly"):
             StrategicPlanner(default_horizon="monthly")
 
+    def test_plan_objectives_includes_guidance_prompt(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("AEON_GUIDANCE_PROMPT", "Real estate: find undervalued properties.")
+        import importlib
+        from auton.core import config
+        from auton.cortex import planner as planner_module
+
+        importlib.reload(config)
+        importlib.reload(planner_module)
+        planner = planner_module.StrategicPlanner()
+        plan = planner.plan_objectives(balance=500.0)
+        assert any("Real estate" in g for g in plan.goals)
+
 
 # ---------------------------------------------------------------------------
 # TacticalExecutor
@@ -587,3 +599,19 @@ class TestCortexIntegration:
             context={"api_name": "alpaca", "retry_count": 0},
         )
         assert action.strategy == RecoveryStrategy.RETRY_WITH_BACKOFF
+
+
+class TestGoalGenerator:
+    def test_generate_goals_includes_guidance_prompt(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("AEON_GUIDANCE_PROMPT", "Technology stocks: analyze tech sector for long-term growth opportunities.")
+        import importlib
+        from auton.core import config
+        from auton.cortex import free_will as free_will_module
+
+        importlib.reload(config)
+        importlib.reload(free_will_module)
+        gen = free_will_module.GoalGenerator()
+        goals = gen.generate_goals(balance=500.0, tier=2)
+        assert any(g.name == "user_guidance" for g in goals)
+        guidance_goal = next(g for g in goals if g.name == "user_guidance")
+        assert "Technology stocks" in guidance_goal.description
