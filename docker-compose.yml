@@ -1,0 +1,41 @@
+# =============================================================================
+# Project ÆON — Docker Compose
+# =============================================================================
+# Start:   docker compose up -d
+# Logs:    docker compose logs -f
+# Stop:    docker compose down
+# =============================================================================
+
+services:
+  aeon:
+    build: .
+    image: auton-aeon:latest
+    container_name: aeon-autonomous-agent
+    restart: unless-stopped
+
+    # Load environment variables from .env (create from .env.example)
+    env_file:
+      - .env
+
+    # Persistent storage mounts
+    volumes:
+      - ./data:/app/data
+      - ./cold_storage:/app/cold_storage
+
+    # Resource limits — conservative bounds for an economic agent
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+
+    # Log rotation to prevent disk exhaustion from long-running sessions
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # Disable interactive mode — the agent runs autonomously
+    stdin_open: false
+    tty: false

@@ -15,6 +15,12 @@ class State(Enum):
 
     INIT = auto()
     RUNNING = auto()
+    PLANNING = auto()
+    EXECUTING = auto()
+    AWAITING_VERIFICATION = auto()
+    AWAITING_APPROVAL = auto()
+    MARKET_RESEARCH = auto()
+    PRODUCT_DEVELOPMENT = auto()
     HIBERNATE = auto()
     TERMINAL = auto()
 
@@ -37,7 +43,54 @@ class StateMachine:
 
     _VALID_TRANSITIONS: dict[State, set[State]] = {
         State.INIT: {State.RUNNING, State.TERMINAL},
-        State.RUNNING: {State.HIBERNATE, State.TERMINAL},
+        State.RUNNING: {
+            State.PLANNING,
+            State.EXECUTING,
+            State.AWAITING_VERIFICATION,
+            State.AWAITING_APPROVAL,
+            State.MARKET_RESEARCH,
+            State.PRODUCT_DEVELOPMENT,
+            State.HIBERNATE,
+            State.TERMINAL,
+        },
+        State.PLANNING: {
+            State.RUNNING,
+            State.EXECUTING,
+            State.HIBERNATE,
+            State.TERMINAL,
+        },
+        State.EXECUTING: {
+            State.RUNNING,
+            State.AWAITING_VERIFICATION,
+            State.AWAITING_APPROVAL,
+            State.HIBERNATE,
+            State.TERMINAL,
+        },
+        State.AWAITING_VERIFICATION: {
+            State.RUNNING,
+            State.EXECUTING,
+            State.AWAITING_APPROVAL,
+            State.HIBERNATE,
+            State.TERMINAL,
+        },
+        State.AWAITING_APPROVAL: {
+            State.RUNNING,
+            State.EXECUTING,
+            State.HIBERNATE,
+            State.TERMINAL,
+        },
+        State.MARKET_RESEARCH: {
+            State.RUNNING,
+            State.PLANNING,
+            State.HIBERNATE,
+            State.TERMINAL,
+        },
+        State.PRODUCT_DEVELOPMENT: {
+            State.RUNNING,
+            State.EXECUTING,
+            State.HIBERNATE,
+            State.TERMINAL,
+        },
         State.HIBERNATE: {State.RUNNING, State.TERMINAL},
         State.TERMINAL: set(),
     }

@@ -17,16 +17,28 @@ from auton.metamind import (
     AdaptionConfig,
     AdaptionEngine,
     AdaptationProposal,
+    CICDGenerator,
     ClassInfo,
     CodeGenerator,
+    CostEstimate,
     DecisionType,
+    DeploymentManager,
     EvolutionGate,
     EvolutionResult,
     FunctionInfo,
     GeneratedCode,
     JournalEntry,
     LLMProvider,
+    ListingRecord,
+    MarketOpportunity,
+    MarketplaceLister,
+    ModuleGenerator,
     ModuleInfo,
+    ProductCategory,
+    ProductManager,
+    ProductRecord,
+    ProductStage,
+    RevenueTracker,
     SafetyRating,
     SelfAnalyzer,
     SourceMap,
@@ -526,3 +538,390 @@ def test_adaption_engine_cooldown_elapsed(engine: AdaptionEngine) -> None:
 
 def test_adaption_engine_roi_proven_empty_history(engine: AdaptionEngine) -> None:
     assert engine._roi_proven() is True
+
+
+# ---------------------------------------------------------------------------
+# SaaS Product Factory — CodeGenerator web app generation
+# ---------------------------------------------------------------------------
+
+def test_generate_fastapi_app(mock_llm: MagicMock, tmp_path: Path) -> None:
+    mock_llm.complete.return_value = (
+        "from fastapi import FastAPI\napp = FastAPI()\n@app.get('/health')\nasync def health(): return {'status': 'ok'}"
+    )
+    gen = CodeGenerator(llm=mock_llm, mutation_dir=tmp_path / "muts")
+    gc = gen.generate_fastapi_app(
+        "TestAPI",
+        endpoints=[{"path": "/items", "method": "GET"}],
+        models=[{"name": "Item", "fields": {"name": "str"}}],
+    )
+    assert gc.module_name == "fastapi_testapi"
+    assert "FastAPI" in gc.source
+    assert gc.mutation_path is not None
+    assert gc.mutation_path.exists()
+
+
+def test_generate_react_frontend(mock_llm: MagicMock, tmp_path: Path) -> None:
+    mock_llm.complete.return_value = "export default function App() { return <div>Hello</div>; }"
+    gen = CodeGenerator(llm=mock_llm, mutation_dir=tmp_path / "muts")
+    gc = gen.generate_react_frontend(
+        "TestUI",
+        pages=["Home", "Dashboard"],
+        api_base_url="https://api.example.com",
+    )
+    assert gc.module_name == "react_testui"
+    assert gc.mutation_path is not None
+    assert gc.mutation_path.exists()
+
+
+def test_generate_fullstack_app(mock_llm: MagicMock, tmp_path: Path) -> None:
+    mock_llm.complete.side_effect = [
+        "from fastapi import FastAPI\napp = FastAPI()",
+        "export default function App() { return <div>Hello</div>; }",
+    ]
+    gen = CodeGenerator(llm=mock_llm, mutation_dir=tmp_path / "muts")
+    result = gen.generate_fullstack_app(
+        "TestApp",
+        endpoints=[{"path": "/api", "method": "GET"}],
+        pages=["Home"],
+    )
+    assert "backend" in result
+    assert "frontend" in result
+    assert result["backend"].module_name == "fastapi_testapp"
+    assert result["frontend"].module_name == "react_testapp"
+
+
+# ---------------------------------------------------------------------------
+# SaaS Product Factory — ModuleGenerator web app generation
+# ---------------------------------------------------------------------------
+
+def test_generate_fastapi_module(mock_llm: MagicMock, tmp_path: Path) -> None:
+    mock_llm.complete.return_value = "from fastapi import FastAPI\napp = FastAPI()\n"
+    mg = ModuleGenerator(llm=mock_llm, mutation_dir=tmp_path / "muts")
+    gc = mg.generate_fastapi_module(
+        "TestAPI",
+        endpoints=[{"path": "/items", "method": "GET"}],
+    )
+    assert gc.module_name == "api_testapi"
+    assert gc.mutation_path is not None
+
+
+def test_generate_react_module(mock_llm: MagicMock, tmp_path: Path) -> None:
+    mock_llm.complete.return_value = "export default function App() { return <div>Hello</div>; }"
+    mg = ModuleGenerator(llm=mock_llm, mutation_dir=tmp_path / "muts")
+    gc = mg.generate_react_module(
+        "TestUI",
+        pages=["Home", "Dashboard"],
+    )
+    assert gc.module_name == "ui_testui"
+    assert gc.mutation_path is not None
+
+
+# ---------------------------------------------------------------------------
+# SaaS Product Factory — ProductManager
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def product_manager(tmp_path: Path) -> ProductManager:
+    return ProductManager(db_path=tmp_path / "products.db")
+
+
+def test_register_and_score_opportunities(product_manager: ProductManager) -> None:
+    opp = MarketOpportunity(
+        category=ProductCategory.API_SERVICE,
+        name="Crypto Price API",
+        description="Real-time crypto prices",
+        estimated_tam=50000.0,
+        competition_level="low",
+        trend_score=0.85,
+    )
+    rid = product_manager.register_opportunity(opp)
+    assert rid > 0
+    scored = product_manager.score_opportunities()
+    assert len(scored) == 1
+    assert scored[0][0].name == "Crypto Price API"
+    assert scored[0][1] > 0
+
+
+def test_estimate_cost(product_manager: ProductManager) -> None:
+    cost = product_manager.estimate_cost(ProductCategory.API_SERVICE, complexity="medium")
+    assert cost.llm_tokens > 0
+    assert cost.total_estimated_cost > 0
+
+
+def test_create_product(product_manager: ProductManager) -> None:
+    cost = product_manager.estimate_cost(ProductCategory.MICROSAAS)
+    prod = product_manager.create_product(
+        product_id="prod_001",
+        name="TinySaaS",
+        category=ProductCategory.MICROSAAS,
+        cost_estimate=cost,
+        metadata={"author": "aeon"},
+    )
+    assert prod.product_id == "prod_001"
+    assert prod.stage == ProductStage.IDEATION
+
+
+def test_product_lifecycle(product_manager: ProductManager) -> None:
+    cost = product_manager.estimate_cost(ProductCategory.WEB_APP)
+    product_manager.create_product("prod_002", "WebApp", ProductCategory.WEB_APP, cost)
+    assert product_manager.update_stage("prod_002", ProductStage.DEVELOPMENT) is True
+    assert product_manager.update_stage("prod_002", ProductStage.DEPLOYED) is True
+    assert product_manager.record_cost("prod_002", 5.0) is True
+    assert product_manager.record_revenue("prod_002", 25.0) is True
+    assert product_manager.set_deployed_url("prod_002", "https://example.com") is True
+    assert product_manager.add_marketplace_url("prod_002", "stripe", "https://buy.stripe.com/test") is True
+    assert product_manager.add_source_path("prod_002", "/tmp/src") is True
+
+    prod = product_manager.get_product("prod_002")
+    assert prod is not None
+    assert prod.stage == ProductStage.DEPLOYED
+    assert prod.actual_cost == 5.0
+    assert prod.revenue == 25.0
+    assert prod.deployed_url == "https://example.com"
+    assert prod.marketplace_urls.get("stripe") == "https://buy.stripe.com/test"
+    assert "/tmp/src" in prod.source_paths
+
+
+def test_list_products(product_manager: ProductManager) -> None:
+    cost = product_manager.estimate_cost(ProductCategory.TOOL)
+    product_manager.create_product("prod_003", "Tool1", ProductCategory.TOOL, cost)
+    product_manager.create_product("prod_004", "Tool2", ProductCategory.TOOL, cost)
+    products = product_manager.list_products()
+    assert len(products) == 2
+
+
+def test_portfolio_summary(product_manager: ProductManager) -> None:
+    cost = product_manager.estimate_cost(ProductCategory.CONTENT)
+    product_manager.create_product("prod_005", "Content1", ProductCategory.CONTENT, cost)
+    product_manager.record_revenue("prod_005", 100.0)
+    summary = product_manager.portfolio_summary()
+    assert summary["total_products"] == 1
+    assert summary["total_revenue"] == 100.0
+    assert summary["net_profit"] == 100.0
+
+
+# ---------------------------------------------------------------------------
+# SaaS Product Factory — CICDGenerator
+# ---------------------------------------------------------------------------
+
+def test_generate_github_actions(tmp_path: Path) -> None:
+    gen = CICDGenerator(output_dir=tmp_path)
+    artifact = gen.generate_github_actions("TestApp", deploy_target="fly.io")
+    assert artifact.artifact_type == "github_action"
+    assert artifact.file_path.exists()
+    assert "fly.io" in artifact.content
+
+
+def test_generate_dockerfile(tmp_path: Path) -> None:
+    gen = CICDGenerator(output_dir=tmp_path)
+    artifact = gen.generate_dockerfile("TestApp", entrypoint="main:app", port=8080)
+    assert artifact.artifact_type == "dockerfile"
+    assert artifact.file_path.exists()
+    assert "8080" in artifact.content
+
+
+def test_generate_docker_compose(tmp_path: Path) -> None:
+    gen = CICDGenerator(output_dir=tmp_path)
+    artifact = gen.generate_docker_compose("TestApp", include_postgres=True, include_redis=True)
+    assert artifact.artifact_type == "compose"
+    assert "postgres" in artifact.content
+    assert "redis" in artifact.content
+
+
+def test_generate_deploy_script(tmp_path: Path) -> None:
+    gen = CICDGenerator(output_dir=tmp_path)
+    artifact = gen.generate_deploy_script("TestApp", target="fly.io")
+    assert artifact.artifact_type == "script"
+    assert artifact.file_path.exists()
+    assert "flyctl" in artifact.content
+
+
+def test_generate_full_pipeline(tmp_path: Path) -> None:
+    gen = CICDGenerator(output_dir=tmp_path)
+    artifacts = gen.generate_full_pipeline("TestApp", deploy_targets=["fly.io"])
+    assert len(artifacts) >= 3
+    types = {a.artifact_type for a in artifacts}
+    assert "github_action" in types
+    assert "dockerfile" in types
+    assert "compose" in types
+    assert "script" in types
+
+
+# ---------------------------------------------------------------------------
+# SaaS Product Factory — DeploymentManager
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def deployment_manager(tmp_path: Path) -> DeploymentManager:
+    return DeploymentManager(db_path=tmp_path / "deployments.db")
+
+
+def test_prepare_source_dir(tmp_path: Path) -> None:
+    dm = DeploymentManager()
+    src = tmp_path / "source"
+    src.mkdir()
+    artifacts = dm.prepare_source_dir("TestApp", src)
+    assert len(artifacts) >= 3
+    assert (src / "Dockerfile").exists()
+
+
+def test_deployment_record(deployment_manager: DeploymentManager) -> None:
+    deployment_manager._record_deployment("dep_001", "prod_001", "fly.io", "deployed", url="https://app.fly.dev")
+    dep = deployment_manager.get_deployment("dep_001")
+    assert dep is not None
+    assert dep.status == "deployed"
+    assert dep.url == "https://app.fly.dev"
+
+
+def test_list_deployments(deployment_manager: DeploymentManager) -> None:
+    deployment_manager._record_deployment("dep_002", "prod_002", "fly.io", "pending")
+    deployment_manager._record_deployment("dep_003", "prod_002", "railway", "deployed")
+    deps = deployment_manager.list_deployments(product_id="prod_002")
+    assert len(deps) == 2
+
+
+# ---------------------------------------------------------------------------
+# SaaS Product Factory — MarketplaceLister
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def marketplace_lister(tmp_path: Path) -> MarketplaceLister:
+    return MarketplaceLister(db_path=tmp_path / "marketplace.db")
+
+
+def test_update_sales(marketplace_lister: MarketplaceLister) -> None:
+    marketplace_lister._record_listing(
+        ListingRecord(
+            listing_id="lst_001",
+            product_id="prod_001",
+            marketplace="stripe",
+            listing_url="https://buy.stripe.com/test",
+            status="live",
+            price_cents=1000,
+        )
+    )
+    assert marketplace_lister.update_sales("lst_001", sales_count=5, revenue=50.0) is True
+    listing = marketplace_lister.get_listing("lst_001")
+    assert listing is not None
+    assert listing.sales_count == 5
+    assert listing.revenue == 50.0
+
+
+def test_list_listings(marketplace_lister: MarketplaceLister) -> None:
+    marketplace_lister._record_listing(
+        ListingRecord(
+            listing_id="lst_002",
+            product_id="prod_003",
+            marketplace="gumroad",
+            listing_url="https://gumroad.com/l/test",
+            status="live",
+        )
+    )
+    listings = marketplace_lister.list_listings(product_id="prod_003")
+    assert len(listings) == 1
+    assert listings[0].marketplace == "gumroad"
+
+
+def test_total_revenue(marketplace_lister: MarketplaceLister) -> None:
+    marketplace_lister._record_listing(
+        ListingRecord(
+            listing_id="lst_003",
+            product_id="prod_004",
+            marketplace="stripe",
+            listing_url="https://buy.stripe.com/test",
+            status="live",
+            revenue=100.0,
+        )
+    )
+    assert marketplace_lister.total_revenue("prod_004") == 100.0
+
+
+# ---------------------------------------------------------------------------
+# SaaS Product Factory — RevenueTracker
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def revenue_tracker(tmp_path: Path) -> RevenueTracker:
+    return RevenueTracker(db_path=tmp_path / "revenue.db")
+
+
+def test_record_sale(revenue_tracker: RevenueTracker) -> None:
+    revenue_tracker.record_sale("evt_001", "prod_001", 49.99, customer_id="cust_001")
+    metrics = revenue_tracker.get_product_metrics("prod_001")
+    assert metrics.total_revenue == 49.99
+    assert metrics.total_sales == 1
+
+
+def test_record_refund(revenue_tracker: RevenueTracker) -> None:
+    revenue_tracker.record_sale("evt_002", "prod_001", 49.99, customer_id="cust_001")
+    revenue_tracker.record_refund("evt_003", "prod_001", 49.99, customer_id="cust_001")
+    metrics = revenue_tracker.get_product_metrics("prod_001")
+    # total_revenue tracks gross sales; refunds are tracked separately
+    assert metrics.total_revenue == 49.99
+    assert metrics.refunds == 49.99
+
+
+def test_subscription_events(revenue_tracker: RevenueTracker) -> None:
+    revenue_tracker.record_subscription_event(
+        "evt_sub_001", "prod_002", "subscription_created", 0.0, customer_id="cust_002"
+    )
+    revenue_tracker.record_subscription_event(
+        "evt_sub_002", "prod_002", "renewal", 29.99, customer_id="cust_002"
+    )
+    metrics = revenue_tracker.get_product_metrics("prod_002")
+    assert metrics.active_subscriptions == 1
+    assert metrics.mrr == 29.99
+
+
+def test_stripe_webhook_sale(revenue_tracker: RevenueTracker) -> None:
+    payload = {
+        "id": "evt_stripe_001",
+        "type": "checkout.session.completed",
+        "data": {
+            "object": {
+                "metadata": {"aeon_product_id": "prod_003"},
+                "customer": "cust_003",
+                "currency": "usd",
+                "amount_total": 4999,
+            }
+        },
+    }
+    event = revenue_tracker.handle_stripe_webhook(payload)
+    assert event is not None
+    assert event.product_id == "prod_003"
+    assert event.amount == 49.99
+
+
+def test_stripe_webhook_unhandled(revenue_tracker: RevenueTracker) -> None:
+    payload = {
+        "id": "evt_stripe_002",
+        "type": "invoice.updated",
+        "data": {"object": {"metadata": {}}},
+    }
+    event = revenue_tracker.handle_stripe_webhook(payload)
+    assert event is None
+
+
+def test_revenue_time_series(revenue_tracker: RevenueTracker) -> None:
+    revenue_tracker.record_sale("evt_004", "prod_004", 10.0)
+    revenue_tracker.record_sale("evt_005", "prod_004", 20.0)
+    ts = revenue_tracker.get_revenue_time_series("prod_004", days=30)
+    assert len(ts) == 1
+    assert ts[0]["revenue"] == 30.0
+
+
+def test_portfolio_revenue(revenue_tracker: RevenueTracker) -> None:
+    revenue_tracker.record_sale("evt_006", "prod_005", 100.0)
+    revenue_tracker.record_sale("evt_007", "prod_006", 200.0)
+    assert revenue_tracker.total_portfolio_revenue() == 300.0
+
+
+def test_customer_churn_rate(revenue_tracker: RevenueTracker) -> None:
+    revenue_tracker.record_subscription_event(
+        "evt_sub_003", "prod_007", "subscription_created", 0.0, customer_id="cust_004"
+    )
+    revenue_tracker.record_subscription_event(
+        "evt_sub_004", "prod_007", "subscription_cancelled", 0.0, customer_id="cust_004"
+    )
+    churn = revenue_tracker.get_customer_churn_rate("prod_007", days=30)
+    assert churn == 1.0

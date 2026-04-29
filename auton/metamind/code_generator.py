@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
@@ -100,6 +101,66 @@ class CodeGenerator:
             mutation_path=mutation_path,
         )
 
+    def generate_fastapi_app(
+        self,
+        app_name: str,
+        endpoints: list[dict[str, Any]],
+        models: list[dict[str, Any]] | None = None,
+    ) -> GeneratedCode:
+        """Generate a complete FastAPI backend application."""
+        prompt = self._build_fastapi_prompt(app_name, endpoints, models)
+        source, cost = self._call_llm(prompt)
+        timestamp = datetime.now(timezone.utc)
+        file_name = f"{timestamp.strftime('%Y%m%d_%H%M%S')}_fastapi_{app_name.lower()}.py"
+        mutation_path = self.mutation_dir / file_name
+        mutation_path.write_text(source, encoding="utf-8")
+        return GeneratedCode(
+            module_name=f"fastapi_{app_name.lower()}",
+            source=source,
+            requirements=["fastapi", "uvicorn", "pydantic"],
+            context={"app_name": app_name, "endpoints": endpoints, "models": models},
+            cost=cost,
+            timestamp=timestamp,
+            mutation_path=mutation_path,
+        )
+
+    def generate_react_frontend(
+        self,
+        app_name: str,
+        pages: list[str],
+        api_base_url: str = "http://localhost:8000",
+    ) -> GeneratedCode:
+        """Generate a React frontend application."""
+        prompt = self._build_react_prompt(app_name, pages, api_base_url)
+        source, cost = self._call_llm(prompt)
+        timestamp = datetime.now(timezone.utc)
+        file_name = f"{timestamp.strftime('%Y%m%d_%H%M%S')}_react_{app_name.lower()}.jsx"
+        mutation_path = self.mutation_dir / file_name
+        mutation_path.write_text(source, encoding="utf-8")
+        return GeneratedCode(
+            module_name=f"react_{app_name.lower()}",
+            source=source,
+            requirements=["react", "vite"],
+            context={"app_name": app_name, "pages": pages, "api_base_url": api_base_url},
+            cost=cost,
+            timestamp=timestamp,
+            mutation_path=mutation_path,
+        )
+
+    def generate_fullstack_app(
+        self,
+        app_name: str,
+        endpoints: list[dict[str, Any]],
+        pages: list[str],
+        models: list[dict[str, Any]] | None = None,
+    ) -> dict[str, GeneratedCode]:
+        """Generate both FastAPI backend and React frontend for a SaaS product."""
+        backend = self.generate_fastapi_app(app_name, endpoints, models)
+        frontend = self.generate_react_frontend(
+            app_name, pages, api_base_url=f"https://{app_name.lower()}.fly.dev"
+        )
+        return {"backend": backend, "frontend": frontend}
+
     def _call_llm(self, prompt: str) -> tuple[str, float]:
         """Invoke the LLM and return (completion, cost)."""
         completion = self.llm.complete(prompt)
@@ -141,4 +202,45 @@ class CodeGenerator:
             "connect(), authenticate(), and fetch_data() methods, "
             "and handle retries and rate limits safely.\n"
             "Output only valid Python code with no markdown formatting."
+        )
+
+    @staticmethod
+    def _build_fastapi_prompt(
+        app_name: str,
+        endpoints: list[dict[str, Any]],
+        models: list[dict[str, Any]] | None,
+    ) -> str:
+        models_str = json.dumps(models) if models else "[]"
+        endpoints_str = json.dumps(endpoints)
+        return (
+            f"Generate a production-quality FastAPI application named '{app_name}'.\n"
+            f"Models: {models_str}\n"
+            f"Endpoints: {endpoints_str}\n"
+            "Requirements:\n"
+            "- Use Pydantic v2 models for request/response validation\n"
+            "- Include health check endpoint at /health\n"
+            "- Include OpenAPI docs at /docs\n"
+            "- Use async route handlers where appropriate\n"
+            "- Include proper error handling with HTTPException\n"
+            "- No hardcoded secrets\n"
+            "Output only valid Python code with no markdown formatting."
+        )
+
+    @staticmethod
+    def _build_react_prompt(
+        app_name: str,
+        pages: list[str],
+        api_base_url: str,
+    ) -> str:
+        return (
+            f"Generate a React frontend application named '{app_name}'.\n"
+            f"Pages: {', '.join(pages)}\n"
+            f"API base URL: {api_base_url}\n"
+            "Requirements:\n"
+            "- Use functional components with hooks\n"
+            "- Use fetch or axios for API calls\n"
+            "- Include React Router for navigation\n"
+            "- Include basic CSS styling\n"
+            "- No hardcoded secrets\n"
+            "Output only valid JSX/JavaScript code with no markdown formatting."
         )

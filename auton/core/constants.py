@@ -69,3 +69,24 @@ DEFAULT_MAX_DAILY_DRAWDOWN: Final[float] = 0.10
 
 # Seed balance at system initialization
 SEED_BALANCE: Final[float] = 50.00
+
+# Operational budgets for SaaS, APIs, and marketing (monthly USD)
+OPERATIONAL_BUDGETS: Final[dict[str, float]] = {
+    "saas": 20.0,
+    "apis": 10.0,
+    "marketing": 15.0,
+}
+
+# Human-in-the-loop approval constants
+APPROVAL_TTL_SECONDS: Final[int] = 3600
+EMAIL_MAX_RETRIES: Final[int] = 5
+EMAIL_RETRY_BACKOFF_BASE: Final[int] = 2
+MAX_PENDING_PROPOSALS: Final[int] = 50
+
+# Default SMTP settings for approval workflow
+DEFAULT_SMTP_PORT: Final[int] = 587
+DEFAULT_SMTP_USE_TLS: Final[bool] = True
+
+# Human-in-the-loop mode switch
+RESTRICTED_MODE: Final[bool] = False
+ENVIRONMENTAL_SENSOR_INTERVAL_SECONDS: Final[float] = 60.0

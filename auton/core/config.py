@@ -2,9 +2,18 @@
 
 from __future__ import annotations
 
+import os
 from enum import Enum, auto
+from typing import Any
 
-from auton.core.constants import TIER_THRESHOLDS
+from auton.core.constants import RESTRICTED_MODE, TIER_THRESHOLDS
+
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover
+    load_dotenv = None  # type: ignore[assignment]
+else:
+    load_dotenv()
 
 
 class Capability(Enum):
@@ -32,12 +41,14 @@ class Capability(Enum):
     EXTERNAL_AI_AGENTS = auto()
     VENTURE_REINVESTMENT = auto()
     LEGAL_ENTITY_FORMATION = auto()
+    INTELLIGENCE_RESEARCH = auto()
 
 
 _CAPABILITY_TIER_MAP: dict[Capability, int] = {
     Capability.SPOT_TRADING: 0,
     Capability.FREELANCE_TASKS: 0,
     Capability.NEWSLETTER_SUBSCRIPTIONS: 0,
+    Capability.INTELLIGENCE_RESEARCH: 0,
     Capability.FUTURES_TRADING: 1,
     Capability.MULTI_EXCHANGE_ARBITRAGE: 1,
     Capability.ON_CHAIN_DATA: 1,
@@ -111,3 +122,44 @@ class TierGate:
             for cap, required in _CAPABILITY_TIER_MAP.items()
             if current_tier >= required
         }
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    """Parse a boolean environment variable."""
+    value = os.environ.get(name, "")
+    if value == "":
+        return default
+    return value.lower() in ("1", "true", "yes", "on")
+
+
+class AeonConfig:
+    """Global runtime configuration for ÆON.
+
+    Loads from environment variables (highest priority) then falls back to a
+    ``.env`` file in the project root.  When ``RESTRICTED_MODE`` is enabled,
+    all financial and deployment actions require human email approval.
+    """
+
+    RESTRICTED_MODE: bool = _env_bool("AEON_RESTRICTED_MODE", RESTRICTED_MODE)
+
+    EMAIL_CONFIG: dict[str, Any] = {
+        "smtp_host": os.environ.get("AEON_APPROVAL_EMAIL_SMTP_HOST", ""),
+        "smtp_port": int(os.environ.get("AEON_APPROVAL_EMAIL_SMTP_PORT", "587")),
+        "sender_email": os.environ.get("AEON_APPROVAL_EMAIL_SENDER", ""),
+        "sender_password": os.environ.get("AEON_APPROVAL_EMAIL_PASSWORD", ""),
+        "recipient_email": os.environ.get("AEON_APPROVAL_EMAIL_RECIPIENT", ""),
+        "use_tls": _env_bool("AEON_APPROVAL_EMAIL_USE_TLS", True),
+    }
+
+    @classmethod
+    def validate(cls) -> None:
+        """Raise RuntimeError if restricted mode is enabled but email is missing."""
+        if not cls.RESTRICTED_MODE:
+            return
+        required = ("smtp_host", "sender_email", "sender_password", "recipient_email")
+        missing = [k for k in required if not cls.EMAIL_CONFIG.get(k)]
+        if missing:
+            raise RuntimeError(
+                f"RESTRICTED_MODE is enabled but email config is incomplete. "
+                f"Missing keys: {', '.join(missing)}"
+            )

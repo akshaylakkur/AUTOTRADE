@@ -36,6 +36,17 @@ class MasterWallet:
         running_balance REAL  NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_tx_time ON transactions(timestamp);
+
+    CREATE TABLE IF NOT EXISTS external_refs (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        receipt_id    INTEGER NOT NULL,
+        external_id   TEXT    NOT NULL,
+        source        TEXT    NOT NULL DEFAULT '',
+        linked_at     TEXT    NOT NULL,
+        UNIQUE(receipt_id, external_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_ext_refs_external ON external_refs(external_id);
+    CREATE INDEX IF NOT EXISTS idx_ext_refs_receipt ON external_refs(receipt_id);
     """
 
     def __init__(self, db_path: str | Path = ":memory:") -> None:
@@ -162,3 +173,90 @@ class MasterWallet:
                 reason=row[3],
                 running_balance=row[4],
             )
+
+    def get_receipts_in_range(
+        self,
+        start: datetime,
+        end: datetime,
+    ) -> Iterable[CostReceipt]:
+        """Yield receipts whose timestamps fall within [*start*, *end*]."""
+        rows = (
+            self._conn()
+            .execute(
+                """
+                SELECT id, timestamp, amount, reason, running_balance
+                FROM transactions
+                WHERE timestamp >= ? AND timestamp <= ?
+                ORDER BY id DESC
+                """,
+                (start.isoformat(), end.isoformat()),
+            )
+            .fetchall()
+        )
+        for row in rows:
+            yield CostReceipt(
+                id=row[0],
+                timestamp=datetime.fromisoformat(row[1]),
+                amount=row[2],
+                reason=row[3],
+                running_balance=row[4],
+            )
+
+    def link_external_ref(
+        self,
+        receipt_id: int,
+        external_id: str,
+        source: str = "",
+    ) -> dict[str, Any]:
+        """Link an internal receipt to an external transaction ID.
+
+        This is used during reconciliation to connect bank transactions
+        to ledger entries.
+        """
+        ts = datetime.now(timezone.utc).isoformat()
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO external_refs (receipt_id, external_id, source, linked_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(receipt_id, external_id) DO NOTHING
+                """,
+                (receipt_id, external_id, source, ts),
+            )
+            conn.commit()
+        return {
+            "receipt_id": receipt_id,
+            "external_id": external_id,
+            "source": source,
+            "linked_at": ts,
+        }
+
+    def get_receipts_by_external_id(
+        self,
+        external_id: str,
+    ) -> list[CostReceipt]:
+        """Return internal receipts linked to *external_id*."""
+        rows = (
+            self._conn()
+            .execute(
+                """
+                SELECT t.id, t.timestamp, t.amount, t.reason, t.running_balance
+                FROM transactions t
+                JOIN external_refs e ON t.id = e.receipt_id
+                WHERE e.external_id = ?
+                ORDER BY t.id DESC
+                """,
+                (external_id,),
+            )
+            .fetchall()
+        )
+        return [
+            CostReceipt(
+                id=row[0],
+                timestamp=datetime.fromisoformat(row[1]),
+                amount=row[2],
+                reason=row[3],
+                running_balance=row[4],
+            )
+            for row in rows
+        ]
