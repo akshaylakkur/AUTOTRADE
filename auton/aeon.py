@@ -46,6 +46,8 @@ from auton.cortex.executor import TacticalExecutor
 from auton.cortex.free_will import FreeWillEngine, GoalGenerator
 from auton.cortex.meta_cognition import MetaCognition
 from auton.cortex.model_router import ModelRouter
+from auton.cortex.bedrock_provider import BedrockProvider
+from auton.cortex.ollama_provider import OllamaProvider
 from auton.cortex.planner import StrategicPlanner
 from auton.limbs.human_gateway import HumanGateway
 from auton.limbs.communications.email_client import EmailClient, SMTPConfig
@@ -60,7 +62,11 @@ from auton.ledger.cost_tracker import CostTracker
 from auton.ledger.exceptions import InsufficientFundsError
 from auton.ledger.master_wallet import MasterWallet
 from auton.ledger.pnl_engine import PnLEngine
-from auton.metamind.adaption_engine import AdaptionEngine
+from auton.metamind.adaption_engine import AdaptionConfig, AdaptionEngine
+from auton.metamind.code_generator import CodeGenerator
+from auton.metamind.evolution_gate import EvolutionGate
+from auton.metamind.self_analyzer import SelfAnalyzer
+from auton.metamind.strategy_journal import StrategyJournal
 from auton.reflexes.circuit_breakers import CircuitBreakers
 from auton.reflexes.emergency_liquidator import EmergencyLiquidator
 from auton.reflexes.position_sizer import PositionSizer
@@ -161,7 +167,31 @@ class AEON:
         self._planner = StrategicPlanner()
         self._executor = TacticalExecutor(event_bus=self._event_bus)
         self._meta = MetaCognition()
-        self._model_router = ModelRouter(meta_cognition=self._meta)
+        provider = AeonConfig.AEON_LLM_PROVIDER.lower()
+        if provider == "bedrock" and AeonConfig.BEDROCK_AWS_ACCESS_KEY_ID:
+            logger.info("LLM provider: Amazon Bedrock (%s)", AeonConfig.BEDROCK_MODEL_ID)
+            self._llm = BedrockProvider(
+                access_key_id=AeonConfig.BEDROCK_AWS_ACCESS_KEY_ID,
+                secret_access_key=AeonConfig.BEDROCK_AWS_SECRET_ACCESS_KEY,
+                region=AeonConfig.BEDROCK_AWS_REGION,
+                model_id=AeonConfig.BEDROCK_MODEL_ID,
+            )
+        else:
+            if provider not in ("ollama", ""):
+                logger.warning(
+                    "LLM provider '%s' not configured or not implemented; falling back to Ollama.",
+                    provider,
+                )
+            logger.info("LLM provider: Ollama (%s @ %s)", AeonConfig.OLLAMA_MODEL, AeonConfig.OLLAMA_HOST)
+            self._llm = OllamaProvider(
+                host=AeonConfig.OLLAMA_HOST,
+                model=AeonConfig.OLLAMA_MODEL,
+            )
+        self._model_router = ModelRouter(
+            frugal_provider=self._llm,
+            deep_provider=self._llm,
+            meta_cognition=self._meta,
+        )
         self._free_will = FreeWillEngine()
         self._goal_generator = GoalGenerator(event_bus=self._event_bus)
         self._opportunity_evaluator = OpportunityEvaluator()
@@ -175,8 +205,8 @@ class AEON:
         self._revenue = RevenueEngine()
         self._risk = RiskManager()
 
-        # Metamind (constructed lazily in _adaptation_loop when needed)
-        self._adaption: Any = None
+        # Metamind — self-modification pipeline backed by Ollama
+        self._adaption: AdaptionEngine = self._build_adaption()
 
         # Human-in-the-loop infrastructure
         self._approval_engine = ApprovalEngine(event_bus=self._event_bus)
@@ -238,6 +268,18 @@ class AEON:
             queue=self._email_queue,
             recipient=cfg.get("recipient_email", ""),
             event_bus=self._event_bus,
+        )
+
+    def _build_adaption(self) -> AdaptionEngine:
+        return AdaptionEngine(
+            analyzer=SelfAnalyzer(),
+            generator=CodeGenerator(llm=self._llm),
+            gate=EvolutionGate(),
+            journal=StrategyJournal(db_path="data/strategy_journal.db"),
+            config=AdaptionConfig(
+                target_module="auton",
+                max_daily_cost=0.0,  # Ollama is free
+            ),
         )
 
     async def initialize(self, seed_balance: float = SEED_BALANCE) -> None:
@@ -1043,6 +1085,7 @@ class AEON:
         await self._env_sensor.stop()
         await self._market_connector.disconnect()
         await self._opportunity_monitor.stop()
+        await self._llm.close()
         await self._email_client.stop_retry_worker()
         await self._event_bus.stop()
 

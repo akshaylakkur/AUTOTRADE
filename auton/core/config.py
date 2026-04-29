@@ -142,6 +142,19 @@ class AeonConfig:
 
     RESTRICTED_MODE: bool = _env_bool("AEON_RESTRICTED_MODE", RESTRICTED_MODE)
 
+    # Ollama (local LLM)
+    AEON_LLM_PROVIDER: str = os.environ.get("AEON_LLM_PROVIDER", "ollama")
+    OLLAMA_HOST: str = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+    OLLAMA_MODEL: str = os.environ.get("OLLAMA_MODEL", "llama3.2")
+
+    # Amazon Bedrock
+    BEDROCK_AWS_ACCESS_KEY_ID: str = os.environ.get("BEDROCK_AWS_ACCESS_KEY_ID", "")
+    BEDROCK_AWS_SECRET_ACCESS_KEY: str = os.environ.get("BEDROCK_AWS_SECRET_ACCESS_KEY", "")
+    BEDROCK_AWS_REGION: str = os.environ.get("BEDROCK_AWS_REGION", "us-east-1")
+    BEDROCK_MODEL_ID: str = os.environ.get(
+        "BEDROCK_MODEL_ID", "anthropic.claude-3-sonnet-20240229-v1:0"
+    )
+
     EMAIL_CONFIG: dict[str, Any] = {
         "smtp_host": os.environ.get("AEON_APPROVAL_EMAIL_SMTP_HOST", ""),
         "smtp_port": int(os.environ.get("AEON_APPROVAL_EMAIL_SMTP_PORT", "587")),

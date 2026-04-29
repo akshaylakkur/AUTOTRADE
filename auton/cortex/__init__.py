@@ -56,10 +56,14 @@ from auton.cortex.free_will import (
 )
 from auton.cortex.meta_cognition import MetaCognition
 from auton.cortex.model_router import AbstractLLMProvider, ModelRouter, RoutingResult
+from auton.cortex.bedrock_provider import BedrockProvider
+from auton.cortex.ollama_provider import OllamaProvider
 from auton.cortex.planner import StrategicPlanner
 
 __all__ = [
     "AbstractLLMProvider",
+    "BedrockProvider",
+    "OllamaProvider",
     "Allocation",
     "ArbitrageExpansion",
     "AutonomousDecisionSystem",
